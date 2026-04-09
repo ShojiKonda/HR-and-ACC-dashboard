@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sports Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <h1>Sports Dashboard</h1>
+    <p>1Hz 加速度合成値・心拍データ可視化</p>
+  </header>
+
+  <main class="container">
+    <section class="panel controls">
+      <div class="control-group">
+        <label for="playerSelect">選手</label>
+        <select id="playerSelect"></select>
+      </div>
+
+      <div class="control-group">
+        <label for="dateSelect">日付</label>
+        <select id="dateSelect"></select>
+      </div>
+
+      <div class="control-group">
+        <label for="sessionSelect">セッション</label>
+        <select id="sessionSelect"></select>
+      </div>
+
+      <div class="control-group">
+        <button id="reloadBtn">更新</button>
+      </div>
+    </section>
+
+    <section class="panel summary">
+      <h2>サマリー</h2>
+      <div id="summaryCards" class="summary-cards"></div>
+    </section>
+
+    <section class="panel">
+      <h2>時系列（加速度・心拍）</h2>
+      <div id="timeSeriesChart" class="chart"></div>
+    </section>
+
+    <section class="panel">
+      <h2>心拍 vs 加速度合成値</h2>
+      <div id="scatterChart" class="chart"></div>
+    </section>
+
+    <section class="panel">
+      <h2>セッション情報</h2>
+      <div id="metaInfo" class="meta-info"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
