@@ -1,58 +1,109 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sports Dashboard</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Polar 心拍・加速度ダッシュボード</title>
   <link rel="stylesheet" href="style.css" />
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
 <body>
-  <header class="site-header">
-    <h1>Sports Dashboard</h1>
-    <p>1Hz 加速度合成値・心拍データ可視化</p>
-  </header>
-
-  <main class="container">
-    <section class="panel controls">
-      <div class="control-group">
-        <label for="playerSelect">選手</label>
-        <select id="playerSelect"></select>
+  <main class="app">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Polar Heart Rate and Acceleration Dashboard</p>
+        <h1>心拍数・3軸加速度ダッシュボード</h1>
+        <p class="lead">
+          Polarで生成される心拍数CSVと加速度CSVを読み込み、センサID別に個人データ、クラス中央値、IQR帯、日間変化を可視化します。加速度は3軸ノルムを1秒単位へ集約し、心拍0 bpmは欠損相当として平均計算と描画から除外します。
+        </p>
       </div>
-
-      <div class="control-group">
-        <label for="dateSelect">日付</label>
-        <select id="dateSelect"></select>
-      </div>
-
-      <div class="control-group">
-        <label for="sessionSelect">セッション</label>
-        <select id="sessionSelect"></select>
-      </div>
-
-      <div class="control-group">
-        <button id="reloadBtn">更新</button>
-      </div>
+      <aside class="status" aria-live="polite">
+        <p class="label">Current dataset</p>
+        <p class="value" id="datasetName">デモデータ</p>
+        <p class="note" id="datasetNote">フォルダ全体、または複数CSVをまとめて読み込めます。</p>
+      </aside>
     </section>
 
-    <section class="panel summary">
-      <h2>サマリー</h2>
-      <div id="summaryCards" class="summary-cards"></div>
+    <nav class="tabs" aria-label="Dashboard tabs">
+      <button class="tab active" type="button" data-tab="personal">タブ1 計測日別個人データ</button>
+      <button class="tab" type="button" data-tab="change">タブ2 個人内の変化</button>
+    </nav>
+
+    <section class="page active" id="personal" data-page="personal">
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="title"><span class="badge">01</span><h2 class="heading">データ読込と表示対象</h2></div>
+            <p class="desc">
+              想定構造は「データフォルダ / 計測日フォルダ / 加速度.csv・心拍数.csv」です。ファイル名が「2026_01_08_1035_1150_001_加速度.csv」のような形式でも日付とセンサIDを自動判定します。
+            </p>
+          </div>
+          <div class="actions">
+            <label class="file-label">フォルダ読込<input id="folderInput" type="file" webkitdirectory directory multiple /></label>
+            <label class="file-label">CSV複数読込<input id="filesInput" type="file" accept=".csv,text/csv" multiple /></label>
+            <button class="small" id="resetDemo" type="button">デモに戻す</button>
+          </div>
+        </div>
+        <div class="controls">
+          <div class="group"><label for="dateSelect">計測日</label><select id="dateSelect"></select></div>
+          <div class="group"><label for="sensorSelect">センサID</label><select id="sensorSelect"></select></div>
+        </div>
+        <div class="kpis" id="kpiGrid"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><div class="title"><span class="badge">02</span><h2 class="heading">心拍時系列</h2></div><p class="desc">選択した計測日・センサIDの心拍数を表示します。</p></div></div>
+        <div class="chart"><canvas id="personalHrChart"></canvas></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><div class="title"><span class="badge">03</span><h2 class="heading">3軸加速度ノルム時系列</h2></div><p class="desc">ACC X, ACC Y, ACC Zからノルムを算出し、1秒ごとの平均値として描画します。</p></div></div>
+        <div class="chart"><canvas id="personalAccChart"></canvas></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><div class="title"><span class="badge">04</span><h2 class="heading">クラス中央値とIQR帯</h2></div><p class="desc">同一計測日の全センサをクラスとして、時刻ごとの中央値と25-75パーセンタイル帯を表示し、選択個人を黄色で重ねます。</p></div></div>
+        <div class="grid2">
+          <div class="mini"><canvas id="classAccChart"></canvas></div>
+          <div class="mini"><canvas id="classHrChart"></canvas></div>
+        </div>
+        <div class="legend"><span><i class="dot" style="--c:#60a5fa"></i>クラス中央値</span><span><i class="dot" style="--c:rgba(96,165,250,.30)"></i>IQR帯</span><span><i class="dot" style="--c:#facc15"></i>選択個人</span></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><div class="title"><span class="badge">05</span><h2 class="heading">平均加速度ノルムと平均心拍数の散布図</h2></div><p class="desc">全員の測定を日別に色分けして背景表示し、選択中の個人データを黄色で強調します。</p></div></div>
+        <div class="chart mid"><canvas id="personalScatterChart"></canvas></div>
+      </section>
     </section>
 
-    <section class="panel">
-      <h2>時系列（加速度・心拍）</h2>
-      <div id="timeSeriesChart" class="chart"></div>
-    </section>
+    <section class="page" id="change" data-page="change">
+      <section class="panel">
+        <div class="panel-head"><div><div class="title"><span class="badge">06</span><h2 class="heading">個人内の日間比較設定</h2></div><p class="desc">同一センサIDについて複数の計測日を選び、心拍・加速度・クラス基準・散布図上の変化ベクトルを比較します。</p></div></div>
+        <div class="controls"><div class="group"><label for="compareSensorSelect">センサID</label><select id="compareSensorSelect"></select></div></div>
+        <div class="checks" id="compareDateChecks"></div>
+      </section>
 
-    <section class="panel">
-      <h2>心拍 vs 加速度合成値</h2>
-      <div id="scatterChart" class="chart"></div>
-    </section>
+      <section class="panel">
+        <div class="panel-head"><div><div class="title"><span class="badge">07</span><h2 class="heading">心拍時系列の日間比較</h2></div><p class="desc">選択したセンサIDの各計測日を色分けして重ねます。</p></div></div>
+        <div class="chart"><canvas id="compareHrChart"></canvas></div><div class="legend" id="compareHrLegend"></div>
+      </section>
 
-    <section class="panel">
-      <h2>セッション情報</h2>
-      <div id="metaInfo" class="meta-info"></div>
+      <section class="panel">
+        <div class="panel-head"><div><div class="title"><span class="badge">08</span><h2 class="heading">3軸加速度ノルム時系列の日間比較</h2></div><p class="desc">1秒単位へ集約した加速度ノルムを、同一個人内で日間比較します。</p></div></div>
+        <div class="chart"><canvas id="compareAccChart"></canvas></div><div class="legend" id="compareAccLegend"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><div class="title"><span class="badge">09</span><h2 class="heading">クラス中央値とIQR帯の日間比較</h2></div><p class="desc">選択した計測日のクラス中央値とIQR帯を比較します。</p></div></div>
+        <div class="grid2">
+          <div class="mini"><canvas id="compareClassAccChart"></canvas></div>
+          <div class="mini"><canvas id="compareClassHrChart"></canvas></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><div class="title"><span class="badge">10</span><h2 class="heading">散布図上の個人内変化ベクトル</h2></div><p class="desc">全員のデータを日別に色分けして背景表示し、選択センサIDの各計測日の位置を太い矢印ベクトルで接続します。</p></div></div>
+        <div class="chart mid"><canvas id="compareScatterChart"></canvas></div>
+      </section>
     </section>
   </main>
 
