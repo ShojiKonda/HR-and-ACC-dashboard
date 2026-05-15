@@ -177,12 +177,43 @@ function parseHrCSV(text) {
 
 function naturalCompare(a, b) { return String(a).localeCompare(String(b), "ja", { numeric: true, sensitivity: "base" }); }
 function mean(values) {
-  const v = values.filter(Number.isFinite);
-  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : NaN;
+  let sum = 0;
+  let count = 0;
+  for (const value of values) {
+    if (Number.isFinite(value)) {
+      sum += value;
+      count += 1;
+    }
+  }
+  return count ? sum / count : NaN;
+}
+function safeMax(values, fallback = 0) {
+  let max = -Infinity;
+  for (const value of values) {
+    if (Number.isFinite(value) && value > max) max = value;
+  }
+  return max === -Infinity ? fallback : max;
 }
 function completeMeasurement(m) {
-  const xs = [...m.hr.map(p => p.x), ...m.acc.map(p => p.x)];
-  return { ...m, startX: Math.min(...xs), endX: Math.max(...xs) };
+  let minX = Infinity;
+  let maxX = -Infinity;
+  for (const p of m.hr) {
+    if (Number.isFinite(p.x)) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+    }
+  }
+  for (const p of m.acc) {
+    if (Number.isFinite(p.x)) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+    }
+  }
+  if (minX === Infinity) {
+    minX = 0;
+    maxX = 0;
+  }
+  return { ...m, startX: minX, endX: maxX };
 }
 function dates() { return [...new Set(state.measurements.map(m => m.date))].sort(); }
 function sensors() { return [...new Set(state.measurements.map(m => m.sensor))].sort(naturalCompare); }
@@ -199,9 +230,24 @@ function dateColor(date) {
 }
 
 function boundsForAllData() {
-  const xs = state.measurements.flatMap(m => [...m.hr.map(p => p.x), ...m.acc.map(p => p.x)]).filter(Number.isFinite);
-  if (!xs.length) return null;
-  return { min: Math.min(...xs), max: Math.max(...xs) };
+  let minX = Infinity;
+  let maxX = -Infinity;
+  for (const m of state.measurements) {
+    for (const p of m.hr) {
+      if (Number.isFinite(p.x)) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+      }
+    }
+    for (const p of m.acc) {
+      if (Number.isFinite(p.x)) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+      }
+    }
+  }
+  if (minX === Infinity) return null;
+  return { min: minX, max: maxX };
 }
 function ensureTimeRange() {
   const b = boundsForAllData();
@@ -501,8 +547,8 @@ function combinedChart(canvas, config) {
   const accPlot = { l: marginL, r: width - marginR, t: Math.round(height * 0.61), b: height - 56 };
   const hrVals = valuesFromSeries(series, "hr");
   const accVals = valuesFromSeries(series, "acc");
-  const hrMax = niceMax(Math.max(...hrVals, 0) * 1.05, 10, 180);
-  const accMax = niceMax(Math.max(...accVals, 0) * 1.08, 0.5, 5);
+  const hrMax = niceMax(safeMax(hrVals, 0) * 1.05, 10, 180);
+  const accMax = niceMax(safeMax(accVals, 0) * 1.08, 0.5, 5);
   drawAxis(ctx, hrPlot, "left", 0, hrMax, "Heart Rate bpm");
   drawAxis(ctx, accPlot, "right", 0, accMax, "Acceleration norm g");
   drawTimeAxis(ctx, accPlot);
