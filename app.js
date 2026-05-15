@@ -347,10 +347,6 @@ function minMax(values) {
   }
   return min === Infinity ? { min: NaN, max: NaN } : { min, max };
 }
-function selectedMedianRange(m, type) {
-  const values = finiteMetricValues(m, type);
-  return { median: median(values), ...minMax(values), n: values.length };
-}
 function allMetricValuesForDate(date, type) {
   const values = [];
   for (const m of state.measurements) {
@@ -362,31 +358,68 @@ function allMetricValuesForDate(date, type) {
   }
   return values;
 }
-function drawKpiHistogram(canvasId, type, label, unit, color) {
+
+const HR_ZONE_DEFS = [
+  { key: "below", label: "<Z1", name: "50%未満", min: 0, max: 0.50, color: "rgba(154,168,189,.55)" },
+  { key: "z1", label: "Z1", name: "50-60%", min: 0.50, max: 0.60, color: C.blue },
+  { key: "z2", label: "Z2", name: "60-70%", min: 0.60, max: 0.70, color: C.cyan },
+  { key: "z3", label: "Z3", name: "70-80%", min: 0.70, max: 0.80, color: C.green },
+  { key: "z4", label: "Z4", name: "80-90%", min: 0.80, max: 0.90, color: C.orange },
+  { key: "z5", label: "Z5", name: "90-100%", min: 0.90, max: Infinity, color: C.red }
+];
+function heartZoneSummary(hrValues, hrMaxRef) {
+  const counts = HR_ZONE_DEFS.map(z => ({ ...z, count: 0, pct: 0 }));
+  const valid = hrValues.filter(v => Number.isFinite(v) && v > 0);
+  if (!valid.length || !Number.isFinite(hrMaxRef) || hrMaxRef <= 0) return counts;
+  for (const value of valid) {
+    const ratio = value / hrMaxRef;
+    const z = counts.find(zone => ratio >= zone.min && ratio < zone.max) || counts[counts.length - 1];
+    z.count += 1;
+  }
+  for (const z of counts) z.pct = valid.length ? (z.count / valid.length) * 100 : 0;
+  return counts;
+}
+function renderHeartZoneBar(hrValues, hrMaxRef) {
+  const zones = heartZoneSummary(hrValues, hrMaxRef);
+  const total = hrValues.filter(v => Number.isFinite(v) && v > 0).length;
+  if (!total) return '<div class="zone-empty">表示範囲内の心拍データがありません。</div>';
+  const segments = zones.map(z => {
+    const label = z.pct >= 7 ? `${z.label} ${z.pct.toFixed(0)}%` : "";
+    return `<span class="zone-segment" style="--c:${z.color};width:${Math.max(0, z.pct)}%">${label}</span>`;
+  }).join("");
+  const legend = zones.map(z => `<span class="zone-legend-item"><i style="--c:${z.color}"></i>${z.label} ${z.name}: ${z.pct.toFixed(1)}%</span>`).join("");
+  return `
+    <div class="zone-block">
+      <div class="zone-head"><span>心拍ゾーン別割合</span><span>HRmax基準 ${formatNumber(hrMaxRef, 0)} bpm</span></div>
+      <div class="zone-bar">${segments}</div>
+      <div class="zone-legend">${legend}</div>
+      <p class="zone-note">Polarの5ゾーン（HRmax比50-60%、60-70%、70-80%、80-90%、90-100%）に基づく表示です。HRmaxは200 bpm固定で計算しています。</p>
+    </div>`;
+}
+function drawAccHistogram(canvasId) {
   const canvas = $(canvasId);
   if (!canvas) return;
   const { ctx, width, height } = canvasContext(canvas);
-  const values = allMetricValuesForDate(state.selectedDate, type);
   const selected = selectedMeasurement();
+  const values = selected ? finiteMetricValues(selected, "acc") : [];
   if (!values.length || !selected) {
-    title(ctx, label, "表示範囲内の値分布を表示できません。", 20, 28);
+    title(ctx, "加速度ノルム分布", "表示範囲内の加速度ノルムを表示できません。", 20, 28);
     return;
   }
 
-  const digits = type === "hr" ? 1 : 3;
-  const axisDigits = type === "hr" ? 0 : 2;
-  const sel = selectedMedianRange(selected, type);
+  const selValues = values.slice().sort((a, b) => a - b);
+  const selMedian = quantile(selValues, 0.50);
+  const selQ1 = quantile(selValues, 0.25);
+  const selQ3 = quantile(selValues, 0.75);
   let { min: xMin, max: xMax } = minMax(values);
-  if (Number.isFinite(sel.min)) xMin = Math.min(xMin, sel.min);
-  if (Number.isFinite(sel.max)) xMax = Math.max(xMax, sel.max);
   if (!Number.isFinite(xMin) || !Number.isFinite(xMax)) return;
-  if (xMax === xMin) { xMin -= 1; xMax += 1; }
+  if (xMax === xMin) { xMin -= 0.1; xMax += 0.1; }
 
-  const pad = Math.max((xMax - xMin) * 0.035, type === "hr" ? 2 : 0.02);
+  const pad = Math.max((xMax - xMin) * 0.035, 0.02);
   xMin -= pad;
   xMax += pad;
 
-  const binsN = type === "hr" ? 24 : 28;
+  const binsN = 28;
   const bins = Array.from({ length: binsN }, () => 0);
   for (const v of values) {
     if (!Number.isFinite(v)) continue;
@@ -402,20 +435,17 @@ function drawKpiHistogram(canvasId, type, label, unit, color) {
   const sy = v => plot.b - (v / yMax) * (plot.b - plot.t);
 
   ctx.save();
-
-  // Header information
   ctx.textAlign = "left";
   ctx.fillStyle = WHITE;
   ctx.font = fnt(900, 13);
-  ctx.fillText(`選択ID ${selected.sensor}: 中央値 ${formatNumber(sel.median, digits)} ${unit}`, 16, 19);
+  ctx.fillText(`選択ID ${selected.sensor}: 中央値 ${formatNumber(selMedian, 3)} g`, 16, 19);
   ctx.fillStyle = INK;
   ctx.font = fnt(800, 12);
-  ctx.fillText(`範囲 ${formatNumber(sel.min, axisDigits)}-${formatNumber(sel.max, axisDigits)} ${unit}`, 16, 39);
+  ctx.fillText(`IQR ${formatNumber(selQ1, 2)}-${formatNumber(selQ3, 2)} g`, 16, 39);
   ctx.fillStyle = MUTED;
   ctx.font = fnt(700, 11);
-  ctx.fillText(`全員の表示範囲内の全値 n=${values.length.toLocaleString()}`, 16, 58);
+  ctx.fillText(`選択IDの表示範囲内の全加速度値 n=${values.length.toLocaleString()}`, 16, 58);
 
-  // Axes and gridlines
   ctx.strokeStyle = "rgba(255,255,255,.78)";
   ctx.lineWidth = 1.4;
   ctx.beginPath();
@@ -439,7 +469,6 @@ function drawKpiHistogram(canvasId, type, label, unit, color) {
     ctx.fillText(Math.round(count).toLocaleString(), plot.l - 10, y);
   }
 
-  // Bars
   const step = (plot.r - plot.l) / binsN;
   const gap = Math.max(2, Math.min(5, step * 0.08));
   const barW = Math.max(2, step - gap);
@@ -454,11 +483,10 @@ function drawKpiHistogram(canvasId, type, label, unit, color) {
     ctx.fillRect(x, y, barW, barH);
   }
 
-  // Selected range and median marker, Activity Dashboard style
-  if (Number.isFinite(sel.min) && Number.isFinite(sel.max)) {
+  if (Number.isFinite(selQ1) && Number.isFinite(selQ3)) {
     const y = plot.t - 28;
-    const x1 = Math.max(plot.l, Math.min(plot.r, sx(sel.min)));
-    const x2 = Math.max(plot.l, Math.min(plot.r, sx(sel.max)));
+    const x1 = Math.max(plot.l, Math.min(plot.r, sx(selQ1)));
+    const x2 = Math.max(plot.l, Math.min(plot.r, sx(selQ3)));
     ctx.strokeStyle = C.yellow;
     ctx.lineWidth = 5;
     ctx.beginPath();
@@ -473,8 +501,8 @@ function drawKpiHistogram(canvasId, type, label, unit, color) {
     ctx.lineTo(x2, y + 10);
     ctx.stroke();
   }
-  if (Number.isFinite(sel.median)) {
-    const x = Math.max(plot.l, Math.min(plot.r, sx(sel.median)));
+  if (Number.isFinite(selMedian)) {
+    const x = Math.max(plot.l, Math.min(plot.r, sx(selMedian)));
     const y = plot.t - 28;
     ctx.fillStyle = WHITE;
     ctx.beginPath();
@@ -485,20 +513,18 @@ function drawKpiHistogram(canvasId, type, label, unit, color) {
     ctx.stroke();
   }
 
-  // Axis labels
   ctx.fillStyle = WHITE;
   ctx.font = fnt(900, 11);
   ctx.textAlign = "center";
-  const tickCount = 4;
-  for (let i = 0; i <= tickCount; i++) {
-    const r = i / tickCount;
+  for (let i = 0; i <= 4; i++) {
+    const r = i / 4;
     const x = plot.l + r * (plot.r - plot.l);
     const v = xMin + r * (xMax - xMin);
-    ctx.fillText(formatNumber(v, axisDigits), x, plot.b + 22);
+    ctx.fillText(formatNumber(v, 2), x, plot.b + 22);
   }
   ctx.fillStyle = INK;
   ctx.font = fnt(800, 11);
-  ctx.fillText(`${label} (${unit})`, (plot.l + plot.r) / 2, height - 12);
+  ctx.fillText("加速度ノルム (g)", (plot.l + plot.r) / 2, height - 12);
   ctx.save();
   ctx.translate(19, (plot.t + plot.b) / 2);
   ctx.rotate(-Math.PI / 2);
@@ -507,7 +533,6 @@ function drawKpiHistogram(canvasId, type, label, unit, color) {
   ctx.textAlign = "center";
   ctx.fillText("頻度", 0, 0);
   ctx.restore();
-
   ctx.restore();
 }
 
@@ -595,18 +620,33 @@ function renderKpis() {
     el.innerHTML = '<div class="empty">選択条件に一致するデータがありません。</div>';
     return;
   }
-  const met = measurementMetrics(m);
-  const hrSel = selectedMedianRange(m, "hr");
-  const accSel = selectedMedianRange(m, "acc");
-  const cards = [
-    { label: "平均心拍数", value: formatNumber(met.avgHr, 1), unit: "bpm", sub: `選択IDの中央値 ${formatNumber(hrSel.median, 1)} bpm / 範囲 ${formatNumber(hrSel.min, 0)}-${formatNumber(hrSel.max, 0)} bpm`, canvas: "hrMedianHist" },
-    { label: "平均加速度ノルム", value: formatNumber(met.avgAcc, 3), unit: "g", sub: `選択IDの中央値 ${formatNumber(accSel.median, 3)} g / 範囲 ${formatNumber(accSel.min, 2)}-${formatNumber(accSel.max, 2)} g`, canvas: "accMedianHist" }
-  ];
-  el.innerHTML = cards.map(row => `<article class="kpi"><p class="klabel">${row.label}</p><p class="kvalue">${row.value}<span class="unit">${row.unit}</span></p><p class="sub">${row.sub}</p><div class="hist-wrap"><canvas id="${row.canvas}"></canvas></div></article>`).join("");
-  requestAnimationFrame(() => {
-    drawKpiHistogram("hrMedianHist", "hr", "心拍数", "bpm", C.yellow);
-    drawKpiHistogram("accMedianHist", "acc", "加速度ノルム", "g", C.cyan);
-  });
+  const hrValues = finiteMetricValues(m, "hr");
+  const accValues = finiteMetricValues(m, "acc");
+  const avgHr = mean(hrValues);
+  const maxHr = safeMax(hrValues, NaN);
+  const avgAcc = mean(accValues);
+  el.innerHTML = `
+    <article class="kpi heart-kpi">
+      <p class="klabel">心拍数</p>
+      <div class="metric-pair">
+        <div class="metric-box">
+          <p class="metric-label">平均心拍数</p>
+          <p class="metric-value">${formatNumber(avgHr, 1)}<span class="unit">bpm</span></p>
+        </div>
+        <div class="metric-box">
+          <p class="metric-label">最大心拍数</p>
+          <p class="metric-value">${formatNumber(maxHr, 0)}<span class="unit">bpm</span></p>
+        </div>
+      </div>
+      ${renderHeartZoneBar(hrValues, 200)}
+    </article>
+    <article class="kpi acc-kpi">
+      <p class="klabel">加速度ノルム</p>
+      <p class="kvalue">${formatNumber(avgAcc, 3)}<span class="unit">g</span></p>
+      <p class="sub">数字は選択IDの表示範囲内平均値。ヒストグラム上の黄色線はIQR、白丸は中央値です。</p>
+      <div class="hist-wrap"><canvas id="accValueHist"></canvas></div>
+    </article>`;
+  requestAnimationFrame(() => drawAccHistogram("accValueHist"));
 }
 
 
