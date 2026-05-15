@@ -208,6 +208,64 @@ function naturalCompare(a, b) {
   return String(a).localeCompare(String(b), "ja", { numeric: true, sensitivity: "base" });
 }
 
+
+async function autoLoadIndexedData() {
+  try {
+    const response = await fetch("data/index.json", { cache: "no-store" });
+    if (!response.ok) return;
+
+    const index = await response.json();
+    const files = Array.isArray(index) ? index : (Array.isArray(index.files) ? index.files : []);
+    if (!files.length) return;
+
+    const grouped = new Map();
+    const errors = [];
+    let loadedCount = 0;
+
+    for (const path of files) {
+      try {
+        const csvResponse = await fetch(path, { cache: "no-store" });
+        if (!csvResponse.ok) throw new Error(`${csvResponse.status} ${csvResponse.statusText}`);
+        const text = await csvResponse.text();
+        const fakeFile = { name: path.split("/").pop(), webkitRelativePath: path };
+        const meta = parseFileMeta(fakeFile);
+        if (!meta.type) continue;
+
+        const parsed = meta.type === "acc" ? parseAccCSV(text) : parseHrCSV(text);
+        const date = meta.date || parsed.firstDate || "unknown-date";
+        const key = `${date}|${meta.sensor}`;
+        const item = grouped.get(key) || { date, sensor: meta.sensor, acc: [], hr: [], sourceFiles: [] };
+        if (meta.type === "acc") item.acc = parsed.samples;
+        if (meta.type === "hr") item.hr = parsed.samples;
+        item.sourceFiles.push(path);
+        grouped.set(key, item);
+        loadedCount += 1;
+      } catch (error) {
+        errors.push(`${path}: ${error.message}`);
+      }
+    }
+
+    const measurements = [...grouped.values()]
+      .map(completeMeasurement)
+      .filter((m) => m.acc.length || m.hr.length)
+      .sort((a, b) => a.date.localeCompare(b.date) || naturalCompare(a.sensor, b.sensor));
+
+    if (!measurements.length) return;
+
+    state.measurements = measurements;
+    state.hasUserData = true;
+    state.datasetName = `GitHubデータ ${measurements.length}件`;
+    state.datasetNote = `data/index.json から${loadedCount}ファイルを自動読込し、全測定を再計算しました。${errors.length ? ` ${errors.length}件の警告があります。` : ""}`;
+    state.selectedDate = dates()[0];
+    state.selectedSensor = sensorsForDate(state.selectedDate)[0] || sensors()[0];
+    state.compareSensor = state.selectedSensor;
+    state.compareDates = new Set(datesForSensor(state.compareSensor));
+    updateAll();
+  } catch (error) {
+    console.warn("data/index.json の自動読込をスキップしました", error);
+  }
+}
+
 async function loadFiles(fileList) {
   const files = [...fileList].filter((file) => /\.csv$/i.test(file.name));
   if (!files.length) return;
@@ -865,3 +923,4 @@ function setupEvents() {
 
 setupEvents();
 resetDemo();
+autoLoadIndexedData();
