@@ -351,68 +351,91 @@ function selectedMedianRange(m, type) {
   const values = finiteMetricValues(m, type);
   return { median: median(values), ...minMax(values), n: values.length };
 }
-function medianDistributionForDate(date, type) {
-  return state.measurements
-    .filter(m => m.date === date)
-    .map(m => ({ sensor: m.sensor, date: m.date, median: median(finiteMetricValues(m, type)) }))
-    .filter(d => Number.isFinite(d.median));
+function allMetricValuesForDate(date, type) {
+  const values = [];
+  for (const m of state.measurements) {
+    if (m.date !== date) continue;
+    const samples = type === "hr" ? m.hr : m.acc;
+    for (const p of filterRange(samples)) {
+      if (Number.isFinite(p.value)) values.push(p.value);
+    }
+  }
+  return values;
 }
 function drawKpiHistogram(canvasId, type, label, unit, color) {
   const canvas = $(canvasId);
   if (!canvas) return;
   const { ctx, width, height } = canvasContext(canvas);
-  const dist = medianDistributionForDate(state.selectedDate, type);
+  const values = allMetricValuesForDate(state.selectedDate, type);
   const selected = selectedMeasurement();
-  if (!dist.length || !selected) {
-    title(ctx, label, "中央値分布を表示できません。", 12, 20);
+  if (!values.length || !selected) {
+    title(ctx, label, "表示範囲内の値分布を表示できません。", 12, 20);
     return;
   }
   const sel = selectedMedianRange(selected, type);
-  let xMin = Math.min(...dist.map(d => d.median));
-  let xMax = Math.max(...dist.map(d => d.median));
+  let { min: xMin, max: xMax } = minMax(values);
   if (Number.isFinite(sel.min)) xMin = Math.min(xMin, sel.min);
   if (Number.isFinite(sel.max)) xMax = Math.max(xMax, sel.max);
+  if (!Number.isFinite(xMin) || !Number.isFinite(xMax)) return;
   if (xMax === xMin) { xMin -= 1; xMax += 1; }
   const pad = (xMax - xMin) * 0.06;
   xMin -= pad;
   xMax += pad;
-  const binsN = Math.max(5, Math.min(12, Math.ceil(Math.sqrt(dist.length) * 2)));
+  const binsN = Math.max(10, Math.min(28, Math.ceil(Math.sqrt(values.length) / 4)));
   const bins = Array.from({ length: binsN }, () => 0);
-  for (const d of dist) {
-    const idx = Math.max(0, Math.min(binsN - 1, Math.floor(((d.median - xMin) / (xMax - xMin)) * binsN)));
+  for (const v of values) {
+    const idx = Math.max(0, Math.min(binsN - 1, Math.floor(((v - xMin) / (xMax - xMin)) * binsN)));
     bins[idx] += 1;
   }
-  const maxCount = Math.max(1, ...bins);
-  const plot = { l: 34, r: width - 18, t: 42, b: height - 24 };
+  let maxCount = 1;
+  for (const b of bins) if (b > maxCount) maxCount = b;
+  const plot = { l: 36, r: width - 22, t: 66, b: height - 24 };
   const sx = v => plot.l + ((v - xMin) / (xMax - xMin || 1)) * (plot.r - plot.l);
   ctx.save();
-  ctx.font = fnt(800, 11);
+  ctx.font = fnt(900, 11);
   ctx.textAlign = "left";
   ctx.fillStyle = WHITE;
   ctx.fillText(`選択ID ${selected.sensor}: 中央値 ${formatNumber(sel.median, type === "hr" ? 1 : 3)} ${unit}`, 10, 15);
   ctx.fillStyle = MUTED;
+  ctx.font = fnt(800, 11);
   ctx.fillText(`範囲 ${formatNumber(sel.min, type === "hr" ? 0 : 2)}-${formatNumber(sel.max, type === "hr" ? 0 : 2)} ${unit}`, 10, 32);
+  ctx.fillStyle = MUTED;
+  ctx.font = fnt(700, 10);
+  ctx.fillText(`全員の表示範囲内の全値 n=${values.length.toLocaleString()}`, 10, 49);
+
   ctx.strokeStyle = GRID;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(plot.l, plot.b);
   ctx.lineTo(plot.r, plot.b);
   ctx.stroke();
-  const barGap = 3;
-  const barW = Math.max(2, (plot.r - plot.l) / binsN - barGap);
+
+  const barGap = 2;
+  const step = (plot.r - plot.l) / binsN;
+  const barW = Math.max(2, step - barGap);
   for (let i = 0; i < binsN; i++) {
     const h = (bins[i] / maxCount) * (plot.b - plot.t);
-    const x = plot.l + i * ((plot.r - plot.l) / binsN) + barGap / 2;
+    const x = plot.l + i * step + barGap / 2;
     ctx.fillStyle = "rgba(96,165,250,.34)";
     ctx.fillRect(x, plot.b - h, barW, h);
   }
+
   if (Number.isFinite(sel.min) && Number.isFinite(sel.max)) {
-    const y = plot.t + 6;
+    const y = plot.t - 8;
+    const x1 = sx(sel.min);
+    const x2 = sx(sel.max);
     ctx.strokeStyle = C.orange;
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.moveTo(sx(sel.min), y);
-    ctx.lineTo(sx(sel.max), y);
+    ctx.moveTo(x1, y);
+    ctx.lineTo(x2, y);
+    ctx.stroke();
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x1, y - 7);
+    ctx.lineTo(x1, y + 7);
+    ctx.moveTo(x2, y - 7);
+    ctx.lineTo(x2, y + 7);
     ctx.stroke();
   }
   if (Number.isFinite(sel.median)) {
@@ -420,7 +443,7 @@ function drawKpiHistogram(canvasId, type, label, unit, color) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.moveTo(x, plot.t);
+    ctx.moveTo(x, plot.t - 18);
     ctx.lineTo(x, plot.b);
     ctx.stroke();
   }
@@ -525,8 +548,8 @@ function renderKpis() {
   ];
   el.innerHTML = cards.map(row => `<article class="kpi"><p class="klabel">${row.label}</p><p class="kvalue">${row.value}<span class="unit">${row.unit}</span></p><p class="sub">${row.sub}</p><div class="hist-wrap"><canvas id="${row.canvas}"></canvas></div></article>`).join("");
   requestAnimationFrame(() => {
-    drawKpiHistogram("hrMedianHist", "hr", "心拍中央値", "bpm", C.yellow);
-    drawKpiHistogram("accMedianHist", "acc", "g", C.cyan);
+    drawKpiHistogram("hrMedianHist", "hr", "心拍数", "bpm", C.yellow);
+    drawKpiHistogram("accMedianHist", "acc", "加速度ノルム", "g", C.cyan);
   });
 }
 
