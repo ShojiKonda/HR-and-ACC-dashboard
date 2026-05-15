@@ -327,6 +327,111 @@ function allMetricPoints() {
 }
 function formatNumber(value, digits = 1) { return Number.isFinite(value) ? value.toFixed(digits) : "-"; }
 
+function finiteMetricValues(m, type) {
+  const samples = type === "hr" ? m.hr : m.acc;
+  return filterRange(samples).map(p => p.value).filter(Number.isFinite);
+}
+function median(values) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return NaN;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+function minMax(values) {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const v of values) {
+    if (!Number.isFinite(v)) continue;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return min === Infinity ? { min: NaN, max: NaN } : { min, max };
+}
+function selectedMedianRange(m, type) {
+  const values = finiteMetricValues(m, type);
+  return { median: median(values), ...minMax(values), n: values.length };
+}
+function medianDistributionForDate(date, type) {
+  return state.measurements
+    .filter(m => m.date === date)
+    .map(m => ({ sensor: m.sensor, date: m.date, median: median(finiteMetricValues(m, type)) }))
+    .filter(d => Number.isFinite(d.median));
+}
+function drawKpiHistogram(canvasId, type, label, unit, color) {
+  const canvas = $(canvasId);
+  if (!canvas) return;
+  const { ctx, width, height } = canvasContext(canvas);
+  const dist = medianDistributionForDate(state.selectedDate, type);
+  const selected = selectedMeasurement();
+  if (!dist.length || !selected) {
+    title(ctx, label, "中央値分布を表示できません。", 12, 20);
+    return;
+  }
+  const sel = selectedMedianRange(selected, type);
+  let xMin = Math.min(...dist.map(d => d.median));
+  let xMax = Math.max(...dist.map(d => d.median));
+  if (Number.isFinite(sel.min)) xMin = Math.min(xMin, sel.min);
+  if (Number.isFinite(sel.max)) xMax = Math.max(xMax, sel.max);
+  if (xMax === xMin) { xMin -= 1; xMax += 1; }
+  const pad = (xMax - xMin) * 0.06;
+  xMin -= pad;
+  xMax += pad;
+  const binsN = Math.max(5, Math.min(12, Math.ceil(Math.sqrt(dist.length) * 2)));
+  const bins = Array.from({ length: binsN }, () => 0);
+  for (const d of dist) {
+    const idx = Math.max(0, Math.min(binsN - 1, Math.floor(((d.median - xMin) / (xMax - xMin)) * binsN)));
+    bins[idx] += 1;
+  }
+  const maxCount = Math.max(1, ...bins);
+  const plot = { l: 34, r: width - 18, t: 42, b: height - 24 };
+  const sx = v => plot.l + ((v - xMin) / (xMax - xMin || 1)) * (plot.r - plot.l);
+  ctx.save();
+  ctx.font = fnt(800, 11);
+  ctx.textAlign = "left";
+  ctx.fillStyle = WHITE;
+  ctx.fillText(`選択ID ${selected.sensor}: 中央値 ${formatNumber(sel.median, type === "hr" ? 1 : 3)} ${unit}`, 10, 15);
+  ctx.fillStyle = MUTED;
+  ctx.fillText(`範囲 ${formatNumber(sel.min, type === "hr" ? 0 : 2)}-${formatNumber(sel.max, type === "hr" ? 0 : 2)} ${unit}`, 10, 32);
+  ctx.strokeStyle = GRID;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(plot.l, plot.b);
+  ctx.lineTo(plot.r, plot.b);
+  ctx.stroke();
+  const barGap = 3;
+  const barW = Math.max(2, (plot.r - plot.l) / binsN - barGap);
+  for (let i = 0; i < binsN; i++) {
+    const h = (bins[i] / maxCount) * (plot.b - plot.t);
+    const x = plot.l + i * ((plot.r - plot.l) / binsN) + barGap / 2;
+    ctx.fillStyle = "rgba(96,165,250,.34)";
+    ctx.fillRect(x, plot.b - h, barW, h);
+  }
+  if (Number.isFinite(sel.min) && Number.isFinite(sel.max)) {
+    const y = plot.t + 6;
+    ctx.strokeStyle = C.orange;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(sx(sel.min), y);
+    ctx.lineTo(sx(sel.max), y);
+    ctx.stroke();
+  }
+  if (Number.isFinite(sel.median)) {
+    const x = sx(sel.median);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x, plot.t);
+    ctx.lineTo(x, plot.b);
+    ctx.stroke();
+  }
+  ctx.fillStyle = MUTED;
+  ctx.font = fnt(700, 10);
+  ctx.textAlign = "center";
+  ctx.fillText(formatNumber(xMin, type === "hr" ? 0 : 2), plot.l, height - 9);
+  ctx.fillText(formatNumber(xMax, type === "hr" ? 0 : 2), plot.r, height - 9);
+  ctx.restore();
+}
+
 async function autoLoadIndexedData() {
   setStatus("読み込み中", "data/index.json からCSV一覧を取得しています。");
   try {
@@ -412,12 +517,19 @@ function renderKpis() {
     return;
   }
   const met = measurementMetrics(m);
+  const hrSel = selectedMedianRange(m, "hr");
+  const accSel = selectedMedianRange(m, "acc");
   const cards = [
-    ["平均心拍数", formatNumber(met.avgHr, 1), "bpm", `有効点数 ${met.hrN.toLocaleString()}`],
-    ["平均加速度ノルム", formatNumber(met.avgAcc, 3), "g", `有効点数 ${met.accN.toLocaleString()}`]
+    { label: "平均心拍数", value: formatNumber(met.avgHr, 1), unit: "bpm", sub: `選択IDの中央値 ${formatNumber(hrSel.median, 1)} bpm / 範囲 ${formatNumber(hrSel.min, 0)}-${formatNumber(hrSel.max, 0)} bpm`, canvas: "hrMedianHist" },
+    { label: "平均加速度ノルム", value: formatNumber(met.avgAcc, 3), unit: "g", sub: `選択IDの中央値 ${formatNumber(accSel.median, 3)} g / 範囲 ${formatNumber(accSel.min, 2)}-${formatNumber(accSel.max, 2)} g`, canvas: "accMedianHist" }
   ];
-  el.innerHTML = cards.map(row => `<article class="kpi"><p class="klabel">${row[0]}</p><p class="kvalue">${row[1]}<span class="unit">${row[2]}</span></p><p class="sub">${row[3]}</p></article>`).join("");
+  el.innerHTML = cards.map(row => `<article class="kpi"><p class="klabel">${row.label}</p><p class="kvalue">${row.value}<span class="unit">${row.unit}</span></p><p class="sub">${row.sub}</p><div class="hist-wrap"><canvas id="${row.canvas}"></canvas></div></article>`).join("");
+  requestAnimationFrame(() => {
+    drawKpiHistogram("hrMedianHist", "hr", "心拍中央値", "bpm", C.yellow);
+    drawKpiHistogram("accMedianHist", "acc", "g", C.cyan);
+  });
 }
+
 
 function title(ctx, text, subtitle, x = 24, y = 28) {
   ctx.fillStyle = WHITE;
@@ -533,38 +645,95 @@ function bandPath(ctx, samples, sx, sy, color, alpha = 0.16) {
   ctx.fill();
   ctx.restore();
 }
+
+function areaPath(ctx, samples, sx, sy, baselineY, color, alpha = 0.18) {
+  const pts = samples.filter(p => Number.isFinite(p.value) && p.x >= state.timeStart && p.x <= state.timeEnd);
+  if (pts.length < 2) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    const x = sx(p.x);
+    const y = sy(p.value);
+    if (i === 0) ctx.moveTo(x, baselineY);
+    ctx.lineTo(x, y);
+  });
+  ctx.lineTo(sx(pts[pts.length - 1].x), baselineY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+function drawAccAxis(ctx, plot, min, max, label) {
+  ctx.save();
+  ctx.strokeStyle = AXIS;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(plot.r, plot.t);
+  ctx.lineTo(plot.r, plot.b);
+  ctx.stroke();
+  ctx.font = fnt(700, 11);
+  ctx.fillStyle = INK;
+  ctx.textAlign = "left";
+  for (let i = 0; i <= 3; i++) {
+    const ratio = i / 3;
+    const y = plot.b - ratio * (plot.b - plot.t);
+    const v = min + ratio * (max - min);
+    ctx.strokeStyle = i === 0 ? AXIS : "rgba(255,255,255,.08)";
+    ctx.beginPath();
+    ctx.moveTo(plot.r, y);
+    ctx.lineTo(plot.r + 6, y);
+    ctx.stroke();
+    ctx.fillText(v.toFixed(max - min <= 5 ? 1 : 0), plot.r + 9, y);
+  }
+  ctx.save();
+  ctx.translate(plot.r + 52, (plot.t + plot.b) / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle = MUTED;
+  ctx.font = fnt(800, 12);
+  ctx.textAlign = "center";
+  ctx.fillText(label, 0, 0);
+  ctx.restore();
+  ctx.restore();
+}
+
 function combinedChart(canvas, config) {
   const series = config.series || [];
-  const hasData = series.some(s => (s.hr || []).some(x => x.samples.length) || (s.acc || []).some(x => x.samples.length) || (s.hrBands || []).some(x => x.samples.length) || (s.accBands || []).some(x => x.samples.length));
-  if (!hasData || state.timeStart === null || state.timeEnd === null || state.timeEnd <= state.timeStart) {
+  const hasHr = series.some(s => (s.hr || []).some(x => x.samples.length) || (s.hrBands || []).some(x => x.samples.length));
+  const hasAcc = series.some(s => (s.acc || []).some(x => x.samples.length) || (s.accBands || []).some(x => x.samples.length));
+  if ((!hasHr && !hasAcc) || state.timeStart === null || state.timeEnd === null || state.timeEnd <= state.timeStart) {
     noData(canvas, config.title, "表示できるデータがありません。");
     return;
   }
   const { ctx, width, height } = canvasContext(canvas);
   title(ctx, config.title, config.subtitle);
-  const marginL = 72, marginR = 82;
-  const hrPlot = { l: marginL, r: width - marginR, t: 78, b: Math.round(height * 0.49) };
-  const accPlot = { l: marginL, r: width - marginR, t: Math.round(height * 0.61), b: height - 56 };
+  const plot = { l: 72, r: width - 82, t: 78, b: height - 56 };
   const hrVals = valuesFromSeries(series, "hr");
   const accVals = valuesFromSeries(series, "acc");
-  const hrMax = niceMax(safeMax(hrVals, 0) * 1.05, 10, 180);
-  const accMax = niceMax(safeMax(accVals, 0) * 1.08, 0.5, 5);
-  drawAxis(ctx, hrPlot, "left", 0, hrMax, "Heart Rate bpm");
-  drawAxis(ctx, accPlot, "right", 0, accMax, "Acceleration norm g");
-  drawTimeAxis(ctx, accPlot);
-  ctx.save();
-  ctx.strokeStyle = "rgba(255,255,255,.16)";
-  ctx.beginPath();
-  ctx.moveTo(hrPlot.l, (hrPlot.b + accPlot.t) / 2);
-  ctx.lineTo(hrPlot.r, (hrPlot.b + accPlot.t) / 2);
-  ctx.stroke();
-  ctx.restore();
-  const sx = x => hrPlot.l + ((x - state.timeStart) / (state.timeEnd - state.timeStart)) * (hrPlot.r - hrPlot.l);
-  const syHr = v => hrPlot.b - (v / hrMax) * (hrPlot.b - hrPlot.t);
+  const hrMax = hasHr ? niceMax(safeMax(hrVals, 0) * 1.05, 10, 180) : 180;
+  const accMax = hasAcc ? niceMax(safeMax(accVals, 0) * 1.08, 0.5, 5) : 5;
+  drawAxis(ctx, plot, "left", 0, hrMax, "Heart Rate bpm");
+  drawTimeAxis(ctx, plot);
+  const sx = x => plot.l + ((x - state.timeStart) / (state.timeEnd - state.timeStart)) * (plot.r - plot.l);
+  const syHr = v => plot.b - (v / hrMax) * (plot.b - plot.t);
+  const accBandH = Math.max(74, Math.min(140, (50 / Math.max(1, hrMax)) * (plot.b - plot.t)));
+  const accPlot = { l: plot.l, r: plot.r, t: plot.b - accBandH, b: plot.b };
   const syAcc = v => accPlot.b - (v / accMax) * (accPlot.b - accPlot.t);
+  if (hasAcc) {
+    drawAccAxis(ctx, accPlot, 0, accMax, "Acceleration norm g");
+    ctx.save();
+    ctx.fillStyle = "rgba(34,211,238,.04)";
+    ctx.fillRect(accPlot.l, accPlot.t, accPlot.r - accPlot.l, accPlot.b - accPlot.t);
+    ctx.restore();
+  }
   for (const s of series) {
     for (const b of (s.hrBands || [])) bandPath(ctx, b.samples, sx, syHr, b.color || s.color || C.blue, b.alpha ?? 0.16);
-    for (const b of (s.accBands || [])) bandPath(ctx, b.samples, sx, syAcc, b.color || s.color || C.cyan, b.alpha ?? 0.16);
+  }
+  if (hasAcc) {
+    for (const s of series) {
+      for (const line of (s.acc || [])) areaPath(ctx, line.samples, sx, syAcc, accPlot.b, line.color || s.color || C.cyan, line.fillAlpha ?? 0.16);
+      for (const b of (s.accBands || [])) bandPath(ctx, b.samples, sx, syAcc, b.color || s.color || C.cyan, b.alpha ?? 0.10);
+    }
   }
   for (const s of series) {
     for (const line of (s.hr || [])) linePath(ctx, line.samples, sx, syHr, line.color || s.color || C.yellow, line.width || 2.4, line.alpha ?? 1, line.dashed || false);
@@ -572,13 +741,13 @@ function combinedChart(canvas, config) {
   }
   ctx.save();
   ctx.font = fnt(900, 12);
-  ctx.fillStyle = C.yellow;
+  ctx.fillStyle = WHITE;
   ctx.textAlign = "left";
-  ctx.fillText("心拍数", hrPlot.l + 8, hrPlot.t + 14);
-  ctx.fillStyle = C.cyan;
-  ctx.fillText("加速度ノルム", accPlot.l + 8, accPlot.t + 14);
+  if (hasHr) ctx.fillText("心拍数", plot.l + 8, plot.t + 14);
+  if (hasAcc) ctx.fillText("加速度ノルム", accPlot.l + 8, accPlot.t + 16);
   ctx.restore();
 }
+
 
 function labelBox(ctx, text, x, y, color) {
   ctx.save();
@@ -668,7 +837,7 @@ function renderPersonalCharts() {
   const m = selectedMeasurement();
   if (!m) {
     noData($("personalCombinedChart"), "心拍・加速度ノルム時系列", "選択条件に一致するデータがありません。");
-    noData($("classCombinedChart"), "クラス中央値とIQR帯", "選択条件に一致するデータがありません。");
+    noData($("classCombinedChart"), "心拍数のクラス中央値とIQR帯", "選択条件に一致するデータがありません。");
     noData($("personalScatterChart"), "平均加速度ノルムと平均心拍数", "選択条件に一致するデータがありません。");
     return;
   }
@@ -678,22 +847,18 @@ function renderPersonalCharts() {
     subtitle: `${m.date} / Sensor ${m.sensor} / ${timeLabel(state.timeStart)}-${timeLabel(state.timeEnd)}`,
     series: [{
       hr: [{ samples: filterRange(m.hr), color: C.yellow, width: 2.8 }],
-      acc: [{ samples: filterRange(accSmooth), color: C.cyan, width: 2.4 }]
+      acc: [{ samples: filterRange(accSmooth), color: C.cyan, width: 2.4, fillAlpha: 0.20 }]
     }]
   });
+  const hrStats = classStats(m.date, "hr");
   combinedChart($("classCombinedChart"), {
-    title: "クラス中央値とIQR帯",
+    title: "心拍数のクラス中央値とIQR帯",
     subtitle: `${m.date} / Sensor ${m.sensor} / ${timeLabel(state.timeStart)}-${timeLabel(state.timeEnd)}`,
     series: [{
-      hrBands: [{ samples: classStats(m.date, "hr"), color: C.blue, alpha: 0.18 }],
-      accBands: [{ samples: classStats(m.date, "acc"), color: C.cyan, alpha: 0.16 }],
+      hrBands: [{ samples: hrStats, color: C.blue, alpha: 0.18 }],
       hr: [
-        { samples: classStats(m.date, "hr").map(p => ({ x: p.x, value: p.median })), color: C.blue, width: 2.4 },
+        { samples: hrStats.map(p => ({ x: p.x, value: p.median })), color: C.blue, width: 2.4 },
         { samples: filterRange(m.hr), color: C.yellow, width: 2.0, alpha: 0.95 }
-      ],
-      acc: [
-        { samples: classStats(m.date, "acc").map(p => ({ x: p.x, value: p.median })), color: C.cyan, width: 2.4 },
-        { samples: filterRange(accSmooth), color: C.yellow, width: 2.0, alpha: 0.95 }
       ]
     }]
   });
@@ -705,6 +870,7 @@ function renderPersonalCharts() {
   });
 }
 
+
 function renderCompareCharts() {
   const ms = selectedCompareMeasurements();
   combinedChart($("compareCombinedChart"), {
@@ -715,23 +881,22 @@ function renderCompareCharts() {
       return {
         color,
         hr: [{ samples: filterRange(m.hr), color, width: 2.2 }],
-        acc: [{ samples: filterRange(smoothSamples(m.acc)), color, width: 2.0 }]
+        acc: [{ samples: filterRange(smoothSamples(m.acc)), color, width: 2.0, fillAlpha: 0.10 }]
       };
     })
   });
   $("compareLegend").innerHTML = ms.map(m => `<span><i class="dot" style="--c:${dateColor(m.date)}"></i>${m.date}</span>`).join("");
   const selectedDates = [...state.compareDates].sort();
   combinedChart($("compareClassCombinedChart"), {
-    title: "クラス中央値とIQR帯の日間比較",
-    subtitle: `${timeLabel(state.timeStart)}-${timeLabel(state.timeEnd)} / 加速度は5秒中央移動平均後に集計`,
+    title: "心拍数のクラス中央値とIQR帯の日間比較",
+    subtitle: `${timeLabel(state.timeStart)}-${timeLabel(state.timeEnd)}`,
     series: selectedDates.map(d => {
       const color = dateColor(d);
+      const hrStats = classStats(d, "hr");
       return {
         color,
-        hrBands: [{ samples: classStats(d, "hr"), color, alpha: 0.09 }],
-        accBands: [{ samples: classStats(d, "acc"), color, alpha: 0.08 }],
-        hr: [{ samples: classStats(d, "hr").map(p => ({ x: p.x, value: p.median })), color, width: 2.0 }],
-        acc: [{ samples: classStats(d, "acc").map(p => ({ x: p.x, value: p.median })), color, width: 2.0 }]
+        hrBands: [{ samples: hrStats, color, alpha: 0.09 }],
+        hr: [{ samples: hrStats.map(p => ({ x: p.x, value: p.median })), color, width: 2.0 }]
       };
     })
   });
@@ -742,6 +907,7 @@ function renderCompareCharts() {
     vectors
   });
 }
+
 
 function updateAll() {
   renderSelectors();

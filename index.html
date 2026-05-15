@@ -22,8 +22,8 @@
     </section>
 
     <nav class="tabs" aria-label="Dashboard tabs">
-      <button class="tab active" type="button" data-tab="personal">タブ1 計測日別個人データ</button>
-      <button class="tab" type="button" data-tab="change">タブ2 個人内の変化</button>
+      <button class="tab active" type="button" data-tab="personal">計測日別個人データ</button>
+      <button class="tab" type="button" data-tab="change">個人内の変化</button>
     </nav>
 
     <section class="page active" data-page="personal">
@@ -47,7 +47,7 @@
         <div class="panel-head">
           <div>
             <div class="title"><span class="badge">02</span><h2 class="heading">心拍・加速度ノルム時系列</h2></div>
-            <p class="desc">心拍数を上段の左軸、3軸加速度ノルムを下段の右軸に表示します。加速度は1秒平均後に5秒中央移動平均を適用します。</p>
+            <p class="desc">心拍数を左軸、加速度ノルムを右軸に表示します。加速度ノルムは心拍数グラフ下部に塗りつぶしで重ね、加速度に対応した心拍変動を確認できるようにします。</p>
           </div>
         </div>
         <div class="chart tall"><canvas id="personalCombinedChart"></canvas></div>
@@ -57,8 +57,8 @@
       <section class="panel">
         <div class="panel-head">
           <div>
-            <div class="title"><span class="badge">03</span><h2 class="heading">クラス中央値とIQR帯</h2></div>
-            <p class="desc">同一計測日の全センサをクラスとして、時刻ごとの中央値と25-75パーセンタイル帯を表示します。加速度は各個人の5秒中央移動平均後に中央値とIQR帯を算出します。</p>
+            <div class="title"><span class="badge">03</span><h2 class="heading">心拍数のクラス中央値とIQR帯</h2></div>
+            <p class="desc">同一計測日の全センサをクラスとして、心拍数の時刻ごとの中央値と25-75パーセンタイル帯を表示し、選択個人を重ねます。</p>
           </div>
         </div>
         <div class="chart tall"><canvas id="classCombinedChart"></canvas></div>
@@ -96,7 +96,7 @@
         <div class="panel-head">
           <div>
             <div class="title"><span class="badge">06</span><h2 class="heading">心拍・加速度ノルム時系列の日間比較</h2></div>
-            <p class="desc">選択したセンサIDの各計測日を色分けし、心拍数を上段、加速度ノルムを下段に表示します。</p>
+            <p class="desc">選択したセンサIDの各計測日を色分けし、心拍数と加速度ノルムを同一時間軸上に表示します。加速度ノルムはグラフ下部に塗りつぶしで重ねます。</p>
           </div>
         </div>
         <div class="chart tall"><canvas id="compareCombinedChart"></canvas></div>
@@ -106,8 +106,8 @@
       <section class="panel">
         <div class="panel-head">
           <div>
-            <div class="title"><span class="badge">07</span><h2 class="heading">クラス中央値とIQR帯の日間比較</h2></div>
-            <p class="desc">選択した各計測日のクラス中央値とIQR帯を、同じ時刻範囲で比較します。</p>
+            <div class="title"><span class="badge">07</span><h2 class="heading">心拍数のクラス中央値とIQR帯の日間比較</h2></div>
+            <p class="desc">選択した各計測日の心拍数クラス中央値とIQR帯を、同じ時刻範囲で比較します。</p>
           </div>
         </div>
         <div class="chart tall"><canvas id="compareClassCombinedChart"></canvas></div>
