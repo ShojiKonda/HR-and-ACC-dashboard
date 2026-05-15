@@ -369,89 +369,145 @@ function drawKpiHistogram(canvasId, type, label, unit, color) {
   const values = allMetricValuesForDate(state.selectedDate, type);
   const selected = selectedMeasurement();
   if (!values.length || !selected) {
-    title(ctx, label, "表示範囲内の値分布を表示できません。", 12, 20);
+    title(ctx, label, "表示範囲内の値分布を表示できません。", 20, 28);
     return;
   }
+
+  const digits = type === "hr" ? 1 : 3;
+  const axisDigits = type === "hr" ? 0 : 2;
   const sel = selectedMedianRange(selected, type);
   let { min: xMin, max: xMax } = minMax(values);
   if (Number.isFinite(sel.min)) xMin = Math.min(xMin, sel.min);
   if (Number.isFinite(sel.max)) xMax = Math.max(xMax, sel.max);
   if (!Number.isFinite(xMin) || !Number.isFinite(xMax)) return;
   if (xMax === xMin) { xMin -= 1; xMax += 1; }
-  const pad = (xMax - xMin) * 0.06;
+
+  const pad = Math.max((xMax - xMin) * 0.035, type === "hr" ? 2 : 0.02);
   xMin -= pad;
   xMax += pad;
-  const binsN = Math.max(10, Math.min(28, Math.ceil(Math.sqrt(values.length) / 4)));
+
+  const binsN = type === "hr" ? 24 : 28;
   const bins = Array.from({ length: binsN }, () => 0);
   for (const v of values) {
+    if (!Number.isFinite(v)) continue;
     const idx = Math.max(0, Math.min(binsN - 1, Math.floor(((v - xMin) / (xMax - xMin)) * binsN)));
     bins[idx] += 1;
   }
+
   let maxCount = 1;
   for (const b of bins) if (b > maxCount) maxCount = b;
-  const plot = { l: 36, r: width - 22, t: 66, b: height - 24 };
+  const yMax = Math.max(1, Math.ceil(maxCount / 4) * 4);
+  const plot = { l: 58, r: width - 30, t: 92, b: height - 48 };
   const sx = v => plot.l + ((v - xMin) / (xMax - xMin || 1)) * (plot.r - plot.l);
+  const sy = v => plot.b - (v / yMax) * (plot.b - plot.t);
+
   ctx.save();
-  ctx.font = fnt(900, 11);
+
+  // Header information
   ctx.textAlign = "left";
   ctx.fillStyle = WHITE;
-  ctx.fillText(`選択ID ${selected.sensor}: 中央値 ${formatNumber(sel.median, type === "hr" ? 1 : 3)} ${unit}`, 10, 15);
+  ctx.font = fnt(900, 13);
+  ctx.fillText(`選択ID ${selected.sensor}: 中央値 ${formatNumber(sel.median, digits)} ${unit}`, 16, 19);
+  ctx.fillStyle = INK;
+  ctx.font = fnt(800, 12);
+  ctx.fillText(`範囲 ${formatNumber(sel.min, axisDigits)}-${formatNumber(sel.max, axisDigits)} ${unit}`, 16, 39);
   ctx.fillStyle = MUTED;
-  ctx.font = fnt(800, 11);
-  ctx.fillText(`範囲 ${formatNumber(sel.min, type === "hr" ? 0 : 2)}-${formatNumber(sel.max, type === "hr" ? 0 : 2)} ${unit}`, 10, 32);
-  ctx.fillStyle = MUTED;
-  ctx.font = fnt(700, 10);
-  ctx.fillText(`全員の表示範囲内の全値 n=${values.length.toLocaleString()}`, 10, 49);
+  ctx.font = fnt(700, 11);
+  ctx.fillText(`全員の表示範囲内の全値 n=${values.length.toLocaleString()}`, 16, 58);
 
-  ctx.strokeStyle = GRID;
-  ctx.lineWidth = 1;
+  // Axes and gridlines
+  ctx.strokeStyle = "rgba(255,255,255,.78)";
+  ctx.lineWidth = 1.4;
   ctx.beginPath();
-  ctx.moveTo(plot.l, plot.b);
+  ctx.moveTo(plot.l, plot.t);
+  ctx.lineTo(plot.l, plot.b);
   ctx.lineTo(plot.r, plot.b);
   ctx.stroke();
 
-  const barGap = 2;
-  const step = (plot.r - plot.l) / binsN;
-  const barW = Math.max(2, step - barGap);
-  for (let i = 0; i < binsN; i++) {
-    const h = (bins[i] / maxCount) * (plot.b - plot.t);
-    const x = plot.l + i * step + barGap / 2;
-    ctx.fillStyle = "rgba(96,165,250,.34)";
-    ctx.fillRect(x, plot.b - h, barW, h);
+  ctx.fillStyle = WHITE;
+  ctx.font = fnt(800, 11);
+  ctx.textAlign = "right";
+  for (let i = 0; i <= 4; i++) {
+    const count = yMax * i / 4;
+    const y = sy(count);
+    ctx.strokeStyle = i === 0 ? "rgba(255,255,255,.55)" : "rgba(255,255,255,.20)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(plot.l, y);
+    ctx.lineTo(plot.r, y);
+    ctx.stroke();
+    ctx.fillText(Math.round(count).toLocaleString(), plot.l - 10, y);
   }
 
+  // Bars
+  const step = (plot.r - plot.l) / binsN;
+  const gap = Math.max(2, Math.min(5, step * 0.08));
+  const barW = Math.max(2, step - gap);
+  for (let i = 0; i < binsN; i++) {
+    const barH = (bins[i] / yMax) * (plot.b - plot.t);
+    const x = plot.l + i * step + gap / 2;
+    const y = plot.b - barH;
+    const grad = ctx.createLinearGradient(0, y, 0, plot.b);
+    grad.addColorStop(0, "rgba(45,212,191,.92)");
+    grad.addColorStop(1, "rgba(45,212,191,.58)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, barW, barH);
+  }
+
+  // Selected range and median marker, Activity Dashboard style
   if (Number.isFinite(sel.min) && Number.isFinite(sel.max)) {
-    const y = plot.t - 8;
-    const x1 = sx(sel.min);
-    const x2 = sx(sel.max);
-    ctx.strokeStyle = C.orange;
-    ctx.lineWidth = 3;
+    const y = plot.t - 28;
+    const x1 = Math.max(plot.l, Math.min(plot.r, sx(sel.min)));
+    const x2 = Math.max(plot.l, Math.min(plot.r, sx(sel.max)));
+    ctx.strokeStyle = C.yellow;
+    ctx.lineWidth = 5;
     ctx.beginPath();
     ctx.moveTo(x1, y);
     ctx.lineTo(x2, y);
     ctx.stroke();
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.moveTo(x1, y - 7);
-    ctx.lineTo(x1, y + 7);
-    ctx.moveTo(x2, y - 7);
-    ctx.lineTo(x2, y + 7);
+    ctx.moveTo(x1, y - 10);
+    ctx.lineTo(x1, y + 10);
+    ctx.moveTo(x2, y - 10);
+    ctx.lineTo(x2, y + 10);
     ctx.stroke();
   }
   if (Number.isFinite(sel.median)) {
-    const x = sx(sel.median);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
+    const x = Math.max(plot.l, Math.min(plot.r, sx(sel.median)));
+    const y = plot.t - 28;
+    ctx.fillStyle = WHITE;
     ctx.beginPath();
-    ctx.moveTo(x, plot.t - 18);
-    ctx.lineTo(x, plot.b);
+    ctx.arc(x, y, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = C.yellow;
+    ctx.lineWidth = 3;
     ctx.stroke();
   }
-  ctx.fillStyle = MUTED;
-  ctx.font = fnt(700, 10);
+
+  // Axis labels
+  ctx.fillStyle = WHITE;
+  ctx.font = fnt(900, 11);
   ctx.textAlign = "center";
-  ctx.fillText(formatNumber(xMin, type === "hr" ? 0 : 2), plot.l, height - 9);
-  ctx.fillText(formatNumber(xMax, type === "hr" ? 0 : 2), plot.r, height - 9);
+  const tickCount = 4;
+  for (let i = 0; i <= tickCount; i++) {
+    const r = i / tickCount;
+    const x = plot.l + r * (plot.r - plot.l);
+    const v = xMin + r * (xMax - xMin);
+    ctx.fillText(formatNumber(v, axisDigits), x, plot.b + 22);
+  }
+  ctx.fillStyle = INK;
+  ctx.font = fnt(800, 11);
+  ctx.fillText(`${label} (${unit})`, (plot.l + plot.r) / 2, height - 12);
+  ctx.save();
+  ctx.translate(19, (plot.t + plot.b) / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle = WHITE;
+  ctx.font = fnt(900, 11);
+  ctx.textAlign = "center";
+  ctx.fillText("頻度", 0, 0);
+  ctx.restore();
+
   ctx.restore();
 }
 
