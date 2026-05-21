@@ -18,6 +18,8 @@ const C = {
 const SERIES = [C.blue, C.cyan, C.green, C.purple, C.orange, C.yellow, C.pink, C.red];
 const FONT = '"Noto Sans JP","Hiragino Sans","Yu Gothic","Yu Gothic UI",Meiryo,sans-serif';
 const ACC_SMOOTH_SEC = 5;
+const DEFAULT_START_SEC = 10 * 3600 + 45 * 60;
+const DEFAULT_END_SEC = 12 * 3600;
 
 const state = {
   measurements: [],
@@ -175,6 +177,52 @@ function parseHrCSV(text) {
   return { samples, firstDate };
 }
 
+
+function isMergedCSV(headers) {
+  const hasTimestamp = findColumn(headers, ["Timestamp", "Time", "DateTime", "日時"]) >= 0;
+  const hasDate = findColumn(headers, ["Date", "計測日", "日付"]) >= 0;
+  const hasSensor = findColumn(headers, ["SensorID", "Sensor ID", "Sensor", "センサID", "ID"]) >= 0;
+  const hasHr = findColumn(headers, ["HeartRate", "Heart Rate", "HR", "心拍数", "心拍"]) >= 0;
+  const hasAcc = findColumn(headers, ["AccNorm", "Acceleration Norm", "ACC Norm", "加速度ノルム"]) >= 0;
+  return hasTimestamp && hasSensor && hasHr && hasAcc && hasDate;
+}
+
+function parseMergedCSV(text) {
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter(line => line.trim());
+  if (lines.length < 2) return [];
+  const headers = splitCSV(lines[0]);
+  if (!isMergedCSV(headers)) return [];
+  const dateIdx = findColumn(headers, ["Date", "計測日", "日付"]);
+  const tsIdx = findColumn(headers, ["Timestamp", "Time", "DateTime", "日時"]);
+  const sensorIdx = findColumn(headers, ["SensorID", "Sensor ID", "Sensor", "センサID", "ID"]);
+  const hrIdx = findColumn(headers, ["HeartRate", "Heart Rate", "HR", "心拍数", "心拍"]);
+  const accIdx = findColumn(headers, ["AccNorm", "Acceleration Norm", "ACC Norm", "加速度ノルム"]);
+  const map = new Map();
+
+  for (let i = 1; i < lines.length; i++) {
+    const row = splitCSV(lines[i]);
+    const d = parseDateTime(row[tsIdx]);
+    const dateText = String(row[dateIdx] || "").trim();
+    const date = dateText || (d ? dateKey(d) : null);
+    const sensor = String(row[sensorIdx] || "").trim() || "001";
+    if (!date || !d) continue;
+    const key = `${date}|${sensor}`;
+    const item = map.get(key) || { date, sensor, acc: [], hr: [], sourceFiles: [] };
+    const x = secOfDay(d);
+    const hr = Number(row[hrIdx]);
+    const acc = Number(row[accIdx]);
+    if (Number.isFinite(hr) && hr > 0) item.hr.push({ x, value: hr });
+    if (Number.isFinite(acc)) item.acc.push({ x, value: acc });
+    map.set(key, item);
+  }
+
+  return [...map.values()].map(item => ({
+    ...item,
+    hr: item.hr.sort((a, b) => a.x - b.x),
+    acc: item.acc.sort((a, b) => a.x - b.x)
+  }));
+}
+
 function naturalCompare(a, b) { return String(a).localeCompare(String(b), "ja", { numeric: true, sensitivity: "base" }); }
 function mean(values) {
   let sum = 0;
@@ -254,8 +302,12 @@ function ensureTimeRange() {
   if (!b) return;
   const start = Math.floor(b.min / 300) * 300;
   const end = Math.ceil(b.max / 300) * 300;
-  if (state.timeStart === null || state.timeStart < start || state.timeStart >= end) state.timeStart = start;
-  if (state.timeEnd === null || state.timeEnd > end || state.timeEnd <= state.timeStart) state.timeEnd = end;
+  const defaultStart = Math.max(start, Math.min(DEFAULT_START_SEC, Math.max(start, end - 300)));
+  const defaultEnd = Math.min(end, Math.max(DEFAULT_END_SEC, defaultStart + 300));
+  if (state.timeStart === null || state.timeStart < start || state.timeStart >= end) state.timeStart = defaultStart;
+  if (state.timeEnd === null || state.timeEnd > end || state.timeEnd <= state.timeStart) state.timeEnd = Math.max(state.timeStart + 300, defaultEnd);
+  if (state.timeEnd > end) state.timeEnd = end;
+  if (state.timeEnd <= state.timeStart) state.timeStart = Math.max(start, state.timeEnd - 300);
 }
 function timeOptions() {
   const b = boundsForAllData();
@@ -360,180 +412,52 @@ function allMetricValuesForDate(date, type) {
 }
 
 const HR_ZONE_DEFS = [
-  { key: "below", label: "<Z1", name: "50%未満", min: 0, max: 0.50, color: "rgba(154,168,189,.55)" },
-  { key: "z1", label: "Z1", name: "50-60%", min: 0.50, max: 0.60, color: C.blue },
-  { key: "z2", label: "Z2", name: "60-70%", min: 0.60, max: 0.70, color: C.cyan },
-  { key: "z3", label: "Z3", name: "70-80%", min: 0.70, max: 0.80, color: C.green },
-  { key: "z4", label: "Z4", name: "80-90%", min: 0.80, max: 0.90, color: C.orange },
-  { key: "z5", label: "Z5", name: "90-100%", min: 0.90, max: Infinity, color: C.red }
+  { key: "z1", level: "1", name: "50-60%", min: 0.50, max: 0.60, bpmMin: 100, bpmMax: 120, color: "#cfd8dc", bandColor: "rgba(207,216,220,.30)" },
+  { key: "z2", level: "2", name: "60-70%", min: 0.60, max: 0.70, bpmMin: 120, bpmMax: 140, color: "#4fc3f7", bandColor: "rgba(79,195,247,.28)" },
+  { key: "z3", level: "3", name: "70-80%", min: 0.70, max: 0.80, bpmMin: 140, bpmMax: 160, color: "#9ccc65", bandColor: "rgba(156,204,101,.28)" },
+  { key: "z4", level: "4", name: "80-90%", min: 0.80, max: 0.90, bpmMin: 160, bpmMax: 180, color: "#facc15", bandColor: "rgba(250,204,21,.28)" },
+  { key: "z5", level: "5", name: "90-100%", min: 0.90, max: Infinity, bpmMin: 180, bpmMax: 200, color: "#ec4899", bandColor: "rgba(236,72,153,.28)" }
 ];
+function formatDuration(totalSeconds) {
+  const sec = Math.max(0, Math.round(totalSeconds || 0));
+  const h = String(Math.floor(sec / 3600)).padStart(2, "0");
+  const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
+  const s = String(sec % 60).padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
 function heartZoneSummary(hrValues, hrMaxRef) {
-  const counts = HR_ZONE_DEFS.map(z => ({ ...z, count: 0, pct: 0 }));
+  const zones = HR_ZONE_DEFS.map(z => ({ ...z, count: 0, pct: 0, seconds: 0 }));
   const valid = hrValues.filter(v => Number.isFinite(v) && v > 0);
-  if (!valid.length || !Number.isFinite(hrMaxRef) || hrMaxRef <= 0) return counts;
+  if (!valid.length || !Number.isFinite(hrMaxRef) || hrMaxRef <= 0) return zones;
   for (const value of valid) {
     const ratio = value / hrMaxRef;
-    const z = counts.find(zone => ratio >= zone.min && ratio < zone.max) || counts[counts.length - 1];
-    z.count += 1;
+    const z = zones.find(zone => ratio >= zone.min && ratio < zone.max);
+    if (z) z.count += 1;
   }
-  for (const z of counts) z.pct = valid.length ? (z.count / valid.length) * 100 : 0;
-  return counts;
+  const totalInZones = zones.reduce((sum, z) => sum + z.count, 0);
+  for (const z of zones) {
+    z.seconds = z.count;
+    z.pct = totalInZones ? (z.count / totalInZones) * 100 : 0;
+  }
+  return zones;
 }
 function renderHeartZoneBar(hrValues, hrMaxRef) {
-  const zones = heartZoneSummary(hrValues, hrMaxRef);
-  const total = hrValues.filter(v => Number.isFinite(v) && v > 0).length;
-  if (!total) return '<div class="zone-empty">表示範囲内の心拍データがありません。</div>';
-  const segments = zones.map(z => {
-    const label = z.pct >= 7 ? `${z.label} ${z.pct.toFixed(0)}%` : "";
-    return `<span class="zone-segment" style="--c:${z.color};width:${Math.max(0, z.pct)}%">${label}</span>`;
-  }).join("");
-  const legend = zones.map(z => `<span class="zone-legend-item"><i style="--c:${z.color}"></i>${z.label} ${z.name}: ${z.pct.toFixed(1)}%</span>`).join("");
+  const zones = heartZoneSummary(hrValues, hrMaxRef).slice().reverse();
+  const totalInZones = zones.reduce((sum, z) => sum + z.count, 0);
+  if (!totalInZones) return '<div class="zone-empty">表示範囲内に Polar 心拍ゾーンへ入る心拍データがありません。</div>';
+  const rows = zones.map(z => `
+    <div class="zone-row">
+      <div class="zone-level" style="--c:${z.color}">${z.level}</div>
+      <div class="zone-track"><div class="zone-fill" style="--c:${z.color};width:${Math.max(0, z.pct)}%"></div></div>
+      <div class="zone-time">${formatDuration(z.seconds)}</div>
+    </div>`).join("");
+  const caption = HR_ZONE_DEFS.slice().reverse().map(z => `<span class="zone-caption-item"><i style="--c:${z.color}"></i>${z.level}: ${z.name}</span>`).join("");
   return `
     <div class="zone-block">
-      <div class="zone-head"><span>心拍ゾーン別割合</span><span>HRmax基準 ${formatNumber(hrMaxRef, 0)} bpm</span></div>
-      <div class="zone-bar">${segments}</div>
-      <div class="zone-legend">${legend}</div>
-      <p class="zone-note">Polarの5ゾーン（HRmax比50-60%、60-70%、70-80%、80-90%、90-100%）に基づく表示です。HRmaxは200 bpm固定で計算しています。</p>
+      <div class="zone-head"><span>心拍ゾーン滞在時間</span><span>Polar 5 zones / HRmax 200 bpm固定</span></div>
+      <div class="zone-rows" aria-label="心拍ゾーン滞在時間">${rows}</div>
+      <div class="zone-caption">${caption}</div>
     </div>`;
-}
-function drawAccHistogram(canvasId) {
-  const canvas = $(canvasId);
-  if (!canvas) return;
-  const { ctx, width, height } = canvasContext(canvas);
-  const selected = selectedMeasurement();
-  const values = selected ? finiteMetricValues(selected, "acc") : [];
-  if (!values.length || !selected) {
-    title(ctx, "加速度ノルム分布", "表示範囲内の加速度ノルムを表示できません。", 20, 28);
-    return;
-  }
-
-  const selValues = values.slice().sort((a, b) => a - b);
-  const selMedian = quantile(selValues, 0.50);
-  const selQ1 = quantile(selValues, 0.25);
-  const selQ3 = quantile(selValues, 0.75);
-  let { min: xMin, max: xMax } = minMax(values);
-  if (!Number.isFinite(xMin) || !Number.isFinite(xMax)) return;
-  if (xMax === xMin) { xMin -= 0.1; xMax += 0.1; }
-
-  const pad = Math.max((xMax - xMin) * 0.035, 0.02);
-  xMin -= pad;
-  xMax += pad;
-
-  const binsN = 28;
-  const bins = Array.from({ length: binsN }, () => 0);
-  for (const v of values) {
-    if (!Number.isFinite(v)) continue;
-    const idx = Math.max(0, Math.min(binsN - 1, Math.floor(((v - xMin) / (xMax - xMin)) * binsN)));
-    bins[idx] += 1;
-  }
-
-  let maxCount = 1;
-  for (const b of bins) if (b > maxCount) maxCount = b;
-  const yMax = Math.max(1, Math.ceil(maxCount / 4) * 4);
-  const plot = { l: 58, r: width - 30, t: 92, b: height - 48 };
-  const sx = v => plot.l + ((v - xMin) / (xMax - xMin || 1)) * (plot.r - plot.l);
-  const sy = v => plot.b - (v / yMax) * (plot.b - plot.t);
-
-  ctx.save();
-  ctx.textAlign = "left";
-  ctx.fillStyle = WHITE;
-  ctx.font = fnt(900, 13);
-  ctx.fillText(`選択ID ${selected.sensor}: 中央値 ${formatNumber(selMedian, 3)} g`, 16, 19);
-  ctx.fillStyle = INK;
-  ctx.font = fnt(800, 12);
-  ctx.fillText(`IQR ${formatNumber(selQ1, 2)}-${formatNumber(selQ3, 2)} g`, 16, 39);
-  ctx.fillStyle = MUTED;
-  ctx.font = fnt(700, 11);
-  ctx.fillText(`選択IDの表示範囲内の全加速度値 n=${values.length.toLocaleString()}`, 16, 58);
-
-  ctx.strokeStyle = "rgba(255,255,255,.78)";
-  ctx.lineWidth = 1.4;
-  ctx.beginPath();
-  ctx.moveTo(plot.l, plot.t);
-  ctx.lineTo(plot.l, plot.b);
-  ctx.lineTo(plot.r, plot.b);
-  ctx.stroke();
-
-  ctx.fillStyle = WHITE;
-  ctx.font = fnt(800, 11);
-  ctx.textAlign = "right";
-  for (let i = 0; i <= 4; i++) {
-    const count = yMax * i / 4;
-    const y = sy(count);
-    ctx.strokeStyle = i === 0 ? "rgba(255,255,255,.55)" : "rgba(255,255,255,.20)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(plot.l, y);
-    ctx.lineTo(plot.r, y);
-    ctx.stroke();
-    ctx.fillText(Math.round(count).toLocaleString(), plot.l - 10, y);
-  }
-
-  const step = (plot.r - plot.l) / binsN;
-  const gap = Math.max(2, Math.min(5, step * 0.08));
-  const barW = Math.max(2, step - gap);
-  for (let i = 0; i < binsN; i++) {
-    const barH = (bins[i] / yMax) * (plot.b - plot.t);
-    const x = plot.l + i * step + gap / 2;
-    const y = plot.b - barH;
-    const grad = ctx.createLinearGradient(0, y, 0, plot.b);
-    grad.addColorStop(0, "rgba(45,212,191,.92)");
-    grad.addColorStop(1, "rgba(45,212,191,.58)");
-    ctx.fillStyle = grad;
-    ctx.fillRect(x, y, barW, barH);
-  }
-
-  if (Number.isFinite(selQ1) && Number.isFinite(selQ3)) {
-    const y = plot.t - 28;
-    const x1 = Math.max(plot.l, Math.min(plot.r, sx(selQ1)));
-    const x2 = Math.max(plot.l, Math.min(plot.r, sx(selQ3)));
-    ctx.strokeStyle = C.yellow;
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.moveTo(x1, y);
-    ctx.lineTo(x2, y);
-    ctx.stroke();
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(x1, y - 10);
-    ctx.lineTo(x1, y + 10);
-    ctx.moveTo(x2, y - 10);
-    ctx.lineTo(x2, y + 10);
-    ctx.stroke();
-  }
-  if (Number.isFinite(selMedian)) {
-    const x = Math.max(plot.l, Math.min(plot.r, sx(selMedian)));
-    const y = plot.t - 28;
-    ctx.fillStyle = WHITE;
-    ctx.beginPath();
-    ctx.arc(x, y, 8, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = C.yellow;
-    ctx.lineWidth = 3;
-    ctx.stroke();
-  }
-
-  ctx.fillStyle = WHITE;
-  ctx.font = fnt(900, 11);
-  ctx.textAlign = "center";
-  for (let i = 0; i <= 4; i++) {
-    const r = i / 4;
-    const x = plot.l + r * (plot.r - plot.l);
-    const v = xMin + r * (xMax - xMin);
-    ctx.fillText(formatNumber(v, 2), x, plot.b + 22);
-  }
-  ctx.fillStyle = INK;
-  ctx.font = fnt(800, 11);
-  ctx.fillText("加速度ノルム (g)", (plot.l + plot.r) / 2, height - 12);
-  ctx.save();
-  ctx.translate(19, (plot.t + plot.b) / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.fillStyle = WHITE;
-  ctx.font = fnt(900, 11);
-  ctx.textAlign = "center";
-  ctx.fillText("頻度", 0, 0);
-  ctx.restore();
-  ctx.restore();
 }
 
 async function autoLoadIndexedData() {
@@ -547,12 +471,35 @@ async function autoLoadIndexedData() {
 
     const map = new Map();
     let loaded = 0;
+    let mergedLoaded = 0;
+    let rawLoaded = 0;
     const errors = [];
+
+    function putMeasurement(item, sourcePath) {
+      const key = `${item.date}|${item.sensor}`;
+      const existing = map.get(key) || { date: item.date, sensor: item.sensor, acc: [], hr: [], sourceFiles: [] };
+      if (item.acc && item.acc.length) existing.acc = item.acc;
+      if (item.hr && item.hr.length) existing.hr = item.hr;
+      existing.sourceFiles.push(sourcePath);
+      map.set(key, existing);
+    }
+
     for (const path of files) {
+      if (!/\.csv$/i.test(path)) continue;
+      if (/preprocess_report\.csv$/i.test(path)) continue;
       try {
         const csvRes = await fetch(encodeURI(path), { cache: "no-store" });
         if (!csvRes.ok) throw new Error(`${csvRes.status} ${csvRes.statusText}`);
         const text = await csvRes.text();
+
+        const mergedItems = parseMergedCSV(text);
+        if (mergedItems.length) {
+          for (const item of mergedItems) putMeasurement(item, path);
+          loaded += 1;
+          mergedLoaded += 1;
+          continue;
+        }
+
         const meta = parseMeta(path);
         if (!meta.type) continue;
         const parsed = meta.type === "acc" ? parseAccCSV(text) : parseHrCSV(text);
@@ -564,6 +511,7 @@ async function autoLoadIndexedData() {
         item.sourceFiles.push(path);
         map.set(key, item);
         loaded += 1;
+        rawLoaded += 1;
       } catch (e) {
         errors.push(`${path}: ${e.message}`);
       }
@@ -579,7 +527,8 @@ async function autoLoadIndexedData() {
     state.timeStart = null;
     state.timeEnd = null;
     ensureTimeRange();
-    setStatus(`GitHubデータ ${measurements.length}件`, `${loaded}ファイルを読み込み、全測定を再計算しました。${errors.length ? ` ${errors.length}件の警告があります。` : ""}`);
+    const modeText = mergedLoaded ? `統合CSV ${mergedLoaded}ファイル` : `元CSV ${rawLoaded}ファイル`;
+    setStatus(`GitHubデータ ${measurements.length}件`, `${modeText}を読み込みました。表示範囲を変えると指標を再計算します。${errors.length ? ` ${errors.length}件の警告があります。` : ""}`);
     updateAll();
   } catch (e) {
     state.measurements = [];
@@ -642,11 +591,10 @@ function renderKpis() {
     </article>
     <article class="kpi acc-kpi">
       <p class="klabel">加速度ノルム</p>
-      <p class="kvalue">${formatNumber(avgAcc, 3)}<span class="unit">g</span></p>
-      <p class="sub">数字は選択IDの表示範囲内平均値。ヒストグラム上の黄色線はIQR、白丸は中央値です。</p>
-      <div class="hist-wrap"><canvas id="accValueHist"></canvas></div>
+      <p class="metric-label">平均加速度ノルム</p>
+      <p class="metric-value">${formatNumber(avgAcc, 3)}<span class="unit">g</span></p>
+      <p class="sub">選択IDの表示範囲内平均値です。</p>
     </article>`;
-  requestAnimationFrame(() => drawAccHistogram("accValueHist"));
 }
 
 
@@ -783,6 +731,25 @@ function areaPath(ctx, samples, sx, sy, baselineY, color, alpha = 0.18) {
   ctx.fill();
   ctx.restore();
 }
+function drawHeartZoneBands(ctx, plot, hrMax) {
+  ctx.save();
+  for (const zone of HR_ZONE_DEFS) {
+    const yTop = plot.b - (Math.min(hrMax, zone.bpmMax) / hrMax) * (plot.b - plot.t);
+    const yBottom = plot.b - (Math.max(0, zone.bpmMin) / hrMax) * (plot.b - plot.t);
+    if (yBottom <= plot.t || yTop >= plot.b) continue;
+    const bandTop = Math.max(plot.t, yTop);
+    const bandBottom = Math.min(plot.b, yBottom);
+    if (bandBottom <= bandTop) continue;
+    ctx.fillStyle = zone.bandColor;
+    ctx.fillRect(plot.l, bandTop, plot.r - plot.l, bandBottom - bandTop);
+    ctx.fillStyle = "rgba(255,255,255,.55)";
+    ctx.font = fnt(800, 10);
+    ctx.textAlign = "right";
+    ctx.fillText(zone.level, plot.r - 6, (bandTop + bandBottom) / 2 + 3);
+  }
+  ctx.restore();
+}
+
 function drawAccAxis(ctx, plot, min, max, label) {
   ctx.save();
   ctx.strokeStyle = AXIS;
@@ -826,47 +793,183 @@ function combinedChart(canvas, config) {
   }
   const { ctx, width, height } = canvasContext(canvas);
   title(ctx, config.title, config.subtitle);
-  const plot = { l: 72, r: width - 82, t: 78, b: height - 56 };
+  const outer = { l: 72, r: width - 82, t: 78, b: height - 56 };
+  const gap = hasHr && hasAcc ? 32 : 0;
+  const innerH = outer.b - outer.t;
+  let hrPlot = null;
+  let accPlot = null;
+  if (hasHr && hasAcc) {
+    const eachH = (innerH - gap) / 2;
+    hrPlot = { l: outer.l, r: outer.r, t: outer.t, b: outer.t + eachH };
+    accPlot = { l: outer.l, r: outer.r, t: hrPlot.b + gap, b: outer.b };
+  } else if (hasHr) {
+    hrPlot = { ...outer };
+  } else if (hasAcc) {
+    accPlot = { ...outer };
+  }
+
   const hrVals = valuesFromSeries(series, "hr");
   const accVals = valuesFromSeries(series, "acc");
-  const hrMax = hasHr ? niceMax(safeMax(hrVals, 0) * 1.05, 10, 180) : 180;
-  const accMax = hasAcc ? niceMax(safeMax(accVals, 0) * 1.08, 0.5, 5) : 5;
-  drawAxis(ctx, plot, "left", 0, hrMax, "Heart Rate bpm");
-  drawTimeAxis(ctx, plot);
-  const sx = x => plot.l + ((x - state.timeStart) / (state.timeEnd - state.timeStart)) * (plot.r - plot.l);
-  const syHr = v => plot.b - (v / hrMax) * (plot.b - plot.t);
-  const accBandH = Math.max(74, Math.min(140, (50 / Math.max(1, hrMax)) * (plot.b - plot.t)));
-  const accPlot = { l: plot.l, r: plot.r, t: plot.b - accBandH, b: plot.b };
-  const syAcc = v => accPlot.b - (v / accMax) * (accPlot.b - accPlot.t);
+  const hrMax = 200;
+  const accMin = 1;
+  const accMaxRaw = hasAcc ? Math.max(accMin + 0.2, safeMax(accVals, accMin) * 1.08) : accMin + 1;
+  const accMax = niceMax(accMaxRaw, 0.25, accMin + 1);
+  const sx = x => outer.l + ((x - state.timeStart) / (state.timeEnd - state.timeStart)) * (outer.r - outer.l);
+  const syHr = v => hrPlot.b - (v / hrMax) * (hrPlot.b - hrPlot.t);
+  const syAcc = v => {
+    const clamped = Math.max(accMin, Math.min(accMax, v));
+    return accPlot.b - ((clamped - accMin) / (accMax - accMin || 1)) * (accPlot.b - accPlot.t);
+  };
+
+  if (hasHr) {
+    drawAxis(ctx, hrPlot, "left", 0, hrMax, "Heart Rate bpm");
+    drawHeartZoneBands(ctx, hrPlot, hrMax);
+  }
   if (hasAcc) {
-    drawAccAxis(ctx, accPlot, 0, accMax, "Acceleration norm g");
+    drawAccAxis(ctx, accPlot, accMin, accMax, "Acceleration norm g");
     ctx.save();
-    ctx.fillStyle = "rgba(34,211,238,.04)";
+    ctx.fillStyle = "rgba(34,211,238,.05)";
     ctx.fillRect(accPlot.l, accPlot.t, accPlot.r - accPlot.l, accPlot.b - accPlot.t);
     ctx.restore();
   }
+  drawTimeAxis(ctx, hasAcc ? accPlot : hrPlot);
+
   for (const s of series) {
-    for (const b of (s.hrBands || [])) bandPath(ctx, b.samples, sx, syHr, b.color || s.color || C.blue, b.alpha ?? 0.16);
-  }
-  if (hasAcc) {
-    for (const s of series) {
-      for (const line of (s.acc || [])) areaPath(ctx, line.samples, sx, syAcc, accPlot.b, line.color || s.color || C.cyan, line.fillAlpha ?? 0.16);
+    if (hasHr) {
+      for (const b of (s.hrBands || [])) bandPath(ctx, b.samples, sx, syHr, b.color || s.color || C.blue, b.alpha ?? 0.16);
+    }
+    if (hasAcc) {
       for (const b of (s.accBands || [])) bandPath(ctx, b.samples, sx, syAcc, b.color || s.color || C.cyan, b.alpha ?? 0.10);
+      for (const line of (s.acc || [])) areaPath(ctx, line.samples, sx, syAcc, syAcc(accMin), line.color || s.color || C.cyan, line.fillAlpha ?? 0.16);
     }
   }
   for (const s of series) {
-    for (const line of (s.hr || [])) linePath(ctx, line.samples, sx, syHr, line.color || s.color || C.yellow, line.width || 2.4, line.alpha ?? 1, line.dashed || false);
-    for (const line of (s.acc || [])) linePath(ctx, line.samples, sx, syAcc, line.color || s.color || C.cyan, line.width || 2.2, line.alpha ?? 1, line.dashed || false);
+    if (hasHr) {
+      for (const line of (s.hr || [])) linePath(ctx, line.samples, sx, syHr, line.color || s.color || C.yellow, line.width || 2.4, line.alpha ?? 1, line.dashed || false);
+    }
+    if (hasAcc) {
+      for (const line of (s.acc || [])) linePath(ctx, line.samples, sx, syAcc, line.color || s.color || C.cyan, line.width || 2.2, line.alpha ?? 1, line.dashed || false);
+    }
   }
   ctx.save();
   ctx.font = fnt(900, 12);
   ctx.fillStyle = WHITE;
   ctx.textAlign = "left";
-  if (hasHr) ctx.fillText("心拍数", plot.l + 8, plot.t + 14);
-  if (hasAcc) ctx.fillText("加速度ノルム", accPlot.l + 8, accPlot.t + 16);
+  if (hasHr && hrPlot) ctx.fillText("心拍数", hrPlot.l + 8, hrPlot.t + 14);
+  if (hasAcc && accPlot) ctx.fillText("加速度ノルム", accPlot.l + 8, accPlot.t + 14);
   ctx.restore();
 }
 
+function gaussianKernel(u) { return Math.exp(-0.5 * u * u) / Math.sqrt(2 * Math.PI); }
+function standardDeviation(values) {
+  const xs = values.filter(Number.isFinite);
+  if (!xs.length) return NaN;
+  const m = mean(xs);
+  const v = mean(xs.map(x => (x - m) ** 2));
+  return Math.sqrt(v);
+}
+function bandwidthSilverman(values) {
+  const xs = values.filter(Number.isFinite).sort((a, b) => a - b);
+  const n = xs.length;
+  if (n < 2) return 0.12;
+  const sd = standardDeviation(xs);
+  const iqr = quantile(xs, 0.75) - quantile(xs, 0.25);
+  const scale = Math.min(sd || Infinity, (iqr / 1.34) || Infinity);
+  const fallback = Math.max(0.08, ((xs[xs.length - 1] - xs[0]) || 0.5) / 20);
+  const h = 0.9 * (Number.isFinite(scale) && scale > 0 ? scale : fallback) * Math.pow(n, -1 / 5);
+  return Number.isFinite(h) && h > 0 ? h : fallback;
+}
+function kdeCurve(values, gridMin, gridMax, points = 160) {
+  const xs = values.filter(Number.isFinite);
+  if (xs.length < 2) return [];
+  const h = bandwidthSilverman(xs);
+  const step = (gridMax - gridMin) / Math.max(2, points - 1);
+  const curve = [];
+  for (let i = 0; i < points; i++) {
+    const x = gridMin + step * i;
+    let sum = 0;
+    for (const v of xs) sum += gaussianKernel((x - v) / h);
+    curve.push({ x, value: sum / (xs.length * h) });
+  }
+  return curve;
+}
+function densityChart(canvas, config) {
+  const items = (config.series || []).map(s => ({ ...s, values: (s.values || []).filter(Number.isFinite) })).filter(s => s.values.length >= 2);
+  if (!items.length) { noData(canvas, config.title, "表示できるデータがありません。"); return; }
+  const { ctx, width, height } = canvasContext(canvas);
+  title(ctx, config.title, config.subtitle);
+  const plot = { l: 72, r: width - 42, t: 78, b: height - 56 };
+  const all = items.flatMap(s => s.values);
+  const xMin = Math.max(1, (config.xMin ?? (Math.min(...all) - 0.08)));
+  const xMax = config.xMax ?? niceMax(Math.max(...all) * 1.05, 0.25, 2);
+  const curves = items.map(s => ({ ...s, curve: kdeCurve(s.values, xMin, xMax) })).filter(s => s.curve.length > 1);
+  if (!curves.length) { noData(canvas, config.title, "表示できるデータがありません。"); return; }
+  const yMax = Math.max(0.1, ...curves.flatMap(s => s.curve.map(p => p.value))) * 1.12;
+  const sx = v => plot.l + ((v - xMin) / (xMax - xMin || 1)) * (plot.r - plot.l);
+  const sy = v => plot.b - ((v - 0) / (yMax || 1)) * (plot.b - plot.t);
+  ctx.strokeStyle = AXIS;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(plot.l, plot.t);
+  ctx.lineTo(plot.l, plot.b);
+  ctx.lineTo(plot.r, plot.b);
+  ctx.stroke();
+  ctx.font = fnt(700, 11);
+  ctx.fillStyle = INK;
+  ctx.textAlign = "right";
+  for (let i = 0; i <= 4; i++) {
+    const r = i / 4;
+    const y = plot.b - r * (plot.b - plot.t);
+    const v = r * yMax;
+    ctx.strokeStyle = i === 0 ? AXIS : GRID;
+    ctx.beginPath();
+    ctx.moveTo(plot.l, y);
+    ctx.lineTo(plot.r, y);
+    ctx.stroke();
+    ctx.fillText(v.toFixed(2), plot.l - 9, y);
+  }
+  ctx.textAlign = "center";
+  for (let i = 0; i <= 6; i++) {
+    const r = i / 6;
+    const x = plot.l + r * (plot.r - plot.l);
+    const v = xMin + r * (xMax - xMin);
+    ctx.fillText(v.toFixed(2), x, plot.b + 22);
+  }
+  ctx.fillStyle = MUTED;
+  ctx.font = fnt(800, 12);
+  ctx.fillText("加速度ノルム (g)", (plot.l + plot.r) / 2, height - 14);
+  ctx.save();
+  ctx.translate(20, (plot.t + plot.b) / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText("確率密度", 0, 0);
+  ctx.restore();
+  for (const s of curves) {
+    ctx.save();
+    ctx.globalAlpha = 0.12;
+    ctx.fillStyle = s.color;
+    ctx.beginPath();
+    s.curve.forEach((p, i) => {
+      const x = sx(p.x), y = sy(p.value);
+      if (i === 0) ctx.moveTo(x, plot.b);
+      ctx.lineTo(x, y);
+    });
+    ctx.lineTo(sx(s.curve[s.curve.length - 1].x), plot.b);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    ctx.save();
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 2.6;
+    ctx.beginPath();
+    s.curve.forEach((p, i) => {
+      const x = sx(p.x), y = sy(p.value);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
+}
 
 function labelBox(ctx, text, x, y, color) {
   ctx.save();
@@ -956,14 +1059,14 @@ function renderPersonalCharts() {
   const m = selectedMeasurement();
   if (!m) {
     noData($("personalCombinedChart"), "心拍・加速度ノルム時系列", "選択条件に一致するデータがありません。");
-    noData($("classCombinedChart"), "心拍数のクラス中央値とIQR帯", "選択条件に一致するデータがありません。");
-    noData($("personalScatterChart"), "平均加速度ノルムと平均心拍数", "選択条件に一致するデータがありません。");
+    noData($("classCombinedChart"), "心拍数のクラス中央値とばらつき", "選択条件に一致するデータがありません。");
+    noData($("personalScatterChart"), "平均加速度と平均心拍数", "選択条件に一致するデータがありません。");
     return;
   }
   const accSmooth = smoothSamples(m.acc);
   combinedChart($("personalCombinedChart"), {
     title: "心拍・加速度ノルム時系列",
-    subtitle: `${m.date} / Sensor ${m.sensor} / ${timeLabel(state.timeStart)}-${timeLabel(state.timeEnd)}`,
+    subtitle: "",
     series: [{
       hr: [{ samples: filterRange(m.hr), color: C.yellow, width: 2.8 }],
       acc: [{ samples: filterRange(accSmooth), color: C.cyan, width: 2.4, fillAlpha: 0.20 }]
@@ -971,8 +1074,8 @@ function renderPersonalCharts() {
   });
   const hrStats = classStats(m.date, "hr");
   combinedChart($("classCombinedChart"), {
-    title: "心拍数のクラス中央値とIQR帯",
-    subtitle: `${m.date} / Sensor ${m.sensor} / ${timeLabel(state.timeStart)}-${timeLabel(state.timeEnd)}`,
+    title: "心拍数のクラス中央値とばらつき",
+    subtitle: "",
     series: [{
       hrBands: [{ samples: hrStats, color: C.blue, alpha: 0.18 }],
       hr: [
@@ -983,8 +1086,8 @@ function renderPersonalCharts() {
   });
   const sm = measurementMetrics(m);
   scatter($("personalScatterChart"), {
-    title: "平均加速度ノルムと平均心拍数",
-    subtitle: `${timeLabel(state.timeStart)}-${timeLabel(state.timeEnd)} / 背景: 全員の測定を日別色分け`,
+    title: "平均加速度と平均心拍数",
+    subtitle: "",
     selected: Number.isFinite(sm.avgAcc) && Number.isFinite(sm.avgHr) ? sm : null
   });
 }
@@ -992,9 +1095,10 @@ function renderPersonalCharts() {
 
 function renderCompareCharts() {
   const ms = selectedCompareMeasurements();
+  const legendHtml = ms.map(m => `<span><i class="dot" style="--c:${dateColor(m.date)}"></i>${m.date}</span>`).join("");
   combinedChart($("compareCombinedChart"), {
     title: "心拍・加速度ノルム時系列の日間比較",
-    subtitle: `Sensor ${state.compareSensor || "-"} / ${timeLabel(state.timeStart)}-${timeLabel(state.timeEnd)}`,
+    subtitle: "",
     series: ms.map(m => {
       const color = dateColor(m.date);
       return {
@@ -1004,11 +1108,23 @@ function renderCompareCharts() {
       };
     })
   });
-  $("compareLegend").innerHTML = ms.map(m => `<span><i class="dot" style="--c:${dateColor(m.date)}"></i>${m.date}</span>`).join("");
+  $("compareLegend").innerHTML = legendHtml || '<span class="empty">比較する計測日を選択してください。</span>';
+
+  densityChart($("compareAccDensityChart"), {
+    title: "加速度ノルム分布の日間比較",
+    subtitle: "",
+    series: ms.map(m => ({
+      label: m.date,
+      color: dateColor(m.date),
+      values: filterRange(m.acc).map(p => p.value)
+    }))
+  });
+  $("compareAccDensityLegend").innerHTML = legendHtml || '<span class="empty">比較する計測日を選択してください。</span>';
+
   const selectedDates = [...state.compareDates].sort();
   combinedChart($("compareClassCombinedChart"), {
-    title: "心拍数のクラス中央値とIQR帯の日間比較",
-    subtitle: `${timeLabel(state.timeStart)}-${timeLabel(state.timeEnd)}`,
+    title: "心拍数のクラス中央値とばらつきの日間比較",
+    subtitle: "",
     series: selectedDates.map(d => {
       const color = dateColor(d);
       const hrStats = classStats(d, "hr");
@@ -1019,14 +1135,15 @@ function renderCompareCharts() {
       };
     })
   });
+  $("compareClassLegend").innerHTML = legendHtml || '<span class="empty">比較する計測日を選択してください。</span>';
+
   const vectors = ms.map(m => ({ ...measurementMetrics(m), color: dateColor(m.date) })).filter(m => Number.isFinite(m.avgAcc) && Number.isFinite(m.avgHr));
   scatter($("compareScatterChart"), {
-    title: "散布図上の個人内変化ベクトル",
-    subtitle: `Sensor ${state.compareSensor || "-"} / ${timeLabel(state.timeStart)}-${timeLabel(state.timeEnd)} / 背景: 全員の測定を日別色分け`,
+    title: "平均加速度と平均心拍数の関係の日間変化",
+    subtitle: "",
     vectors
   });
 }
-
 
 function updateAll() {
   renderSelectors();

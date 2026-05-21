@@ -12,7 +12,6 @@
       <div>
         <p class="eyebrow">Polar Heart Rate and Acceleration Dashboard</p>
         <h1>心拍数・3軸加速度ダッシュボード</h1>
-        <p class="lead">GitHub Pages 上の <code>data/index.json</code> に登録された心拍数CSVと加速度CSVを読み込み、センサID別に個人データ、クラス中央値、IQR帯、個人内変化を可視化します。</p>
       </div>
       <aside class="status" aria-live="polite">
         <p class="label">Current dataset</p>
@@ -31,7 +30,6 @@
         <div class="panel-head">
           <div>
             <div class="title"><span class="badge">01</span><h2 class="heading">データ読込と表示対象</h2></div>
-            <p class="desc">計測日、センサID、表示する時間軸を選択します。横軸は経過時間ではなく、計測時刻で表示します。</p>
           </div>
         </div>
         <div class="controls">
@@ -47,7 +45,6 @@
         <div class="panel-head">
           <div>
             <div class="title"><span class="badge">02</span><h2 class="heading">心拍・加速度ノルム時系列</h2></div>
-            <p class="desc">心拍数を左軸、加速度ノルムを右軸に表示します。加速度ノルムは心拍数グラフ下部に塗りつぶしで重ね、加速度に対応した心拍変動を確認できるようにします。</p>
           </div>
         </div>
         <div class="chart tall"><canvas id="personalCombinedChart"></canvas></div>
@@ -57,22 +54,20 @@
       <section class="panel">
         <div class="panel-head">
           <div>
-            <div class="title"><span class="badge">03</span><h2 class="heading">心拍数のクラス中央値とIQR帯</h2></div>
-            <p class="desc">同一計測日の全センサをクラスとして、心拍数の時刻ごとの中央値と25-75パーセンタイル帯を表示し、選択個人を重ねます。</p>
+            <div class="title"><span class="badge">03</span><h2 class="heading">心拍数のクラス中央値とばらつき</h2></div>
           </div>
         </div>
         <div class="chart tall"><canvas id="classCombinedChart"></canvas></div>
-        <div class="legend"><span><i class="dot" style="--c:#60a5fa"></i>クラス中央値</span><span><i class="dot" style="--c:rgba(96,165,250,.30)"></i>IQR帯</span><span><i class="dot" style="--c:#facc15"></i>選択個人</span></div>
+        <div class="legend"><span><i class="dot" style="--c:#60a5fa"></i>クラス中央値</span><span><i class="dot" style="--c:rgba(96,165,250,.30)"></i>ばらつき</span><span><i class="dot" style="--c:#facc15"></i>選択個人</span></div>
       </section>
 
       <section class="panel">
         <div class="panel-head">
           <div>
-            <div class="title"><span class="badge">04</span><h2 class="heading">平均加速度ノルムと平均心拍数の散布図</h2></div>
-            <p class="desc">選択した時間範囲内の平均値を用い、全員の測定を日別に色分けして背景表示します。</p>
+            <div class="title"><span class="badge">04</span><h2 class="heading">平均加速度と平均心拍数の関係</h2></div>
           </div>
         </div>
-        <div class="chart mid"><canvas id="personalScatterChart"></canvas></div>
+        <div class="chart scatter"><canvas id="personalScatterChart"></canvas></div>
       </section>
     </section>
 
@@ -81,7 +76,6 @@
         <div class="panel-head">
           <div>
             <div class="title"><span class="badge">05</span><h2 class="heading">個人内の日間比較設定</h2></div>
-            <p class="desc">同一センサIDについて複数の計測日を選び、同じ時刻範囲で日間比較します。</p>
           </div>
         </div>
         <div class="controls">
@@ -96,7 +90,6 @@
         <div class="panel-head">
           <div>
             <div class="title"><span class="badge">06</span><h2 class="heading">心拍・加速度ノルム時系列の日間比較</h2></div>
-            <p class="desc">選択したセンサIDの各計測日を色分けし、心拍数と加速度ノルムを同一時間軸上に表示します。加速度ノルムはグラフ下部に塗りつぶしで重ねます。</p>
           </div>
         </div>
         <div class="chart tall"><canvas id="compareCombinedChart"></canvas></div>
@@ -106,21 +99,30 @@
       <section class="panel">
         <div class="panel-head">
           <div>
-            <div class="title"><span class="badge">07</span><h2 class="heading">心拍数のクラス中央値とIQR帯の日間比較</h2></div>
-            <p class="desc">選択した各計測日の心拍数クラス中央値とIQR帯を、同じ時刻範囲で比較します。</p>
+            <div class="title"><span class="badge">07</span><h2 class="heading">加速度ノルム分布の日間比較</h2></div>
           </div>
         </div>
-        <div class="chart tall"><canvas id="compareClassCombinedChart"></canvas></div>
+        <div class="chart mid"><canvas id="compareAccDensityChart"></canvas></div>
+        <div class="legend" id="compareAccDensityLegend"></div>
       </section>
 
       <section class="panel">
         <div class="panel-head">
           <div>
-            <div class="title"><span class="badge">08</span><h2 class="heading">散布図上の個人内変化ベクトル</h2></div>
-            <p class="desc">選択した時間範囲内の平均値を用い、選択センサIDの各計測日の位置を太い矢印で接続します。</p>
+            <div class="title"><span class="badge">08</span><h2 class="heading">心拍数のクラス中央値とばらつきの日間比較</h2></div>
           </div>
         </div>
-        <div class="chart mid"><canvas id="compareScatterChart"></canvas></div>
+        <div class="chart tall"><canvas id="compareClassCombinedChart"></canvas></div>
+        <div class="legend" id="compareClassLegend"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="title"><span class="badge">09</span><h2 class="heading">平均加速度と平均心拍数の関係の日間変化</h2></div>
+          </div>
+        </div>
+        <div class="chart scatter"><canvas id="compareScatterChart"></canvas></div>
       </section>
     </section>
   </main>
