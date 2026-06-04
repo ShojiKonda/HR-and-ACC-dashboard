@@ -18,8 +18,11 @@ const C = {
 const SERIES = [C.blue, C.cyan, C.green, C.purple, C.orange, C.yellow, C.pink, C.red];
 const FONT = '"Noto Sans JP","Hiragino Sans","Yu Gothic","Yu Gothic UI",Meiryo,sans-serif';
 const ACC_SMOOTH_SEC = 5;
-const DEFAULT_START_SEC = 10 * 3600 + 45 * 60;
-const DEFAULT_END_SEC = 12 * 3600;
+// 解析・表示対象時刻。1日内に複数時間帯のデータが含まれていても、この範囲だけを使用します。
+const ANALYSIS_START_LABEL = "10:40";
+const ANALYSIS_END_LABEL = "11:50";
+const ANALYSIS_START_SEC = 10 * 3600 + 40 * 60;
+const ANALYSIS_END_SEC = 11 * 3600 + 50 * 60;
 
 const state = {
   measurements: [],
@@ -298,24 +301,19 @@ function boundsForAllData() {
   return { min: minX, max: maxX };
 }
 function ensureTimeRange() {
-  const b = boundsForAllData();
-  if (!b) return;
-  const start = Math.floor(b.min / 300) * 300;
-  const end = Math.ceil(b.max / 300) * 300;
-  const defaultStart = Math.max(start, Math.min(DEFAULT_START_SEC, Math.max(start, end - 300)));
-  const defaultEnd = Math.min(end, Math.max(DEFAULT_END_SEC, defaultStart + 300));
-  if (state.timeStart === null || state.timeStart < start || state.timeStart >= end) state.timeStart = defaultStart;
-  if (state.timeEnd === null || state.timeEnd > end || state.timeEnd <= state.timeStart) state.timeEnd = Math.max(state.timeStart + 300, defaultEnd);
+  // 10:40-11:50をコード上の解析対象範囲として固定します。
+  // UIの時刻選択もこの範囲内だけに制限されます。
+  const start = ANALYSIS_START_SEC;
+  const end = ANALYSIS_END_SEC;
+  if (state.timeStart === null || state.timeStart < start || state.timeStart >= end) state.timeStart = start;
+  if (state.timeEnd === null || state.timeEnd > end || state.timeEnd <= state.timeStart) state.timeEnd = end;
   if (state.timeEnd > end) state.timeEnd = end;
-  if (state.timeEnd <= state.timeStart) state.timeStart = Math.max(start, state.timeEnd - 300);
+  if (state.timeStart < start) state.timeStart = start;
+  if (state.timeEnd <= state.timeStart) state.timeEnd = Math.min(end, state.timeStart + 300);
 }
 function timeOptions() {
-  const b = boundsForAllData();
-  if (!b) return [];
-  const start = Math.floor(b.min / 300) * 300;
-  const end = Math.ceil(b.max / 300) * 300;
   const out = [];
-  for (let s = start; s <= end; s += 300) out.push(s);
+  for (let s = ANALYSIS_START_SEC; s <= ANALYSIS_END_SEC; s += 300) out.push(s);
   return out;
 }
 function inTimeRange(p) { return p.x >= state.timeStart && p.x <= state.timeEnd; }
@@ -528,7 +526,7 @@ async function autoLoadIndexedData() {
     state.timeEnd = null;
     ensureTimeRange();
     const modeText = mergedLoaded ? `統合CSV ${mergedLoaded}ファイル` : `元CSV ${rawLoaded}ファイル`;
-    setStatus(`GitHubデータ ${measurements.length}件`, `${modeText}を読み込みました。表示範囲を変えると指標を再計算します。${errors.length ? ` ${errors.length}件の警告があります。` : ""}`);
+    setStatus(`GitHubデータ ${measurements.length}件`, `${modeText}を読み込みました。解析対象時刻は ${ANALYSIS_START_LABEL}-${ANALYSIS_END_LABEL} です。${errors.length ? ` ${errors.length}件の警告があります。` : ""}`);
     updateAll();
   } catch (e) {
     state.measurements = [];

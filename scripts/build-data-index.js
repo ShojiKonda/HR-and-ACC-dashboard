@@ -1,9 +1,9 @@
-const fs = require('fs');
-const path = require('path');
+const fs = require("fs");
+const path = require("path");
 
-const root = path.resolve(__dirname, '..');
-const dataDir = path.join(root, 'data');
-const outputPath = path.join(dataDir, 'index.json');
+const root = process.cwd();
+const dataDir = path.join(root, "data");
+const outPath = path.join(dataDir, "index.json");
 
 function walk(dir) {
   if (!fs.existsSync(dir)) return [];
@@ -13,15 +13,18 @@ function walk(dir) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...walk(fullPath));
-    } else if (/\.csv$/i.test(entry.name)) {
-      const relativePath = path.relative(root, fullPath).split(path.sep).join('/');
-      files.push(relativePath);
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".csv")) {
+      files.push(path.relative(root, fullPath).replace(/\\/g, "/"));
     }
   }
   return files;
 }
 
-const files = walk(dataDir).sort((a, b) => a.localeCompare(b, 'ja', { numeric: true, sensitivity: 'base' }));
-const json = JSON.stringify({ files }, null, 2) + '\n';
-fs.writeFileSync(outputPath, json, 'utf8');
-console.log(`Wrote ${outputPath} with ${files.length} CSV file(s).`);
+const files = walk(dataDir).sort();
+const index = {
+  generatedAt: new Date().toISOString(),
+  files
+};
+fs.writeFileSync(outPath, JSON.stringify(index, null, 2), "utf8");
+console.log(`Wrote ${outPath}`);
+console.log(`${files.length} CSV files indexed.`);
