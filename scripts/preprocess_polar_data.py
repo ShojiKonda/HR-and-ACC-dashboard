@@ -3,43 +3,33 @@
 """
 Polar 心拍数・加速度CSV 前処理スクリプト
 
-目的:
-- Polarの「加速度.csv」と「心拍数.csv」を、センサID・計測日ごとに対応付ける
+役割:
+- 生データの「加速度.csv」と「心拍数.csv」を、計測日・センサIDごとに対応付ける
 - 加速度3軸から加速度ノルムを計算する
 - 加速度ノルムを1秒区間平均にダウンサンプリングする
-- 心拍数も1秒単位に整形する
-- 1つのCSVに Date, Timestamp, SensorID, HeartRate, AccNorm として統合する
-- GitHub Pages用の data/index.json を自動生成する
+- 心拍数を1秒単位に整形する
+- 心拍数と加速度ノルムを1つの統合CSVへ出力する
 
-想定入力構造:
-input_root/
-  2026_01_08/
-    2026_01_08_1035_1150_001_加速度.csv
-    2026_01_08_1035_1150_001_心拍数.csv
-    2026_01_08_1035_1150_002_加速度.csv
-    2026_01_08_1035_1150_002_心拍数.csv
+重要:
+- data/index.json はこのスクリプトでは作成しません。
+- index.json は scripts/build_data_index.py で data フォルダ全体をスキャンして作成してください。
 
-出力構造:
-output_root/
-  2026_01_08/
-    2026_01_08_001_merged.csv
-    2026_01_08_002_merged.csv
-  index.json
+出力CSV:
+Date,Timestamp,SensorID,HeartRate,AccNorm
 
 使い方:
-  python preprocess_polar_data.py --input-dir "D:/polar_raw" --output-dir "D:/HR-and-ACC-dashboard/data"
+python scripts/preprocess_polar_data.py --input-dir "D:/raw/polar_260507" --output-dir "C:/Users/.../HR-and-ACC-dashboard/data"
 
-引数を省略すると、フォルダ選択ダイアログが開きます。
+引数を省略すると、入力フォルダ・出力フォルダの選択ダイアログが開きます。
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import time
 from pathlib import Path
 from typing import Optional
 
@@ -47,25 +37,28 @@ import numpy as np
 import pandas as pd
 
 
-# =========================
-# 設定
-# =========================
+# ============================================================
+# 解析対象時間範囲
+# ============================================================
+# ここを変更すると、前処理で切り出す時間範囲を変えられます。
+# None にすると、その端の切り出しを行いません。
+CROP_START_TIME = "10:40:00"
+CROP_END_TIME = "11:50:00"
+
+# True: 上の時刻範囲で統合CSVを切り出す
+# False: 全時刻を出力する
+ENABLE_TIME_CROP = True
+
+
+# ============================================================
+# 基本設定
+# ============================================================
 
 CSV_ENCODINGS = ("utf-8-sig", "utf-8", "cp932", "shift_jis")
 
 ACC_KEYWORDS = ("加速度", "acc", "acceler")
 HR_KEYWORDS = ("心拍数", "心拍", "heart rate", "heartrate", "heart", "hr")
 
-DEFAULT_INDEX_PREFIX = "data"
-# 1日内に複数時間帯のデータが含まれる場合、この範囲だけを出力します。
-# 必要に応じてここを書き換えてください。
-CROP_START_TIME = "10:40:00"
-CROP_END_TIME = "11:50:00"
-
-
-# =========================
-# データ構造
-# =========================
 
 @dataclass
 class FileMeta:
@@ -97,12 +90,7 @@ class ProcessResult:
     last_timestamp: str
 
 
-# =========================
-# ユーティリティ
-# =========================
-
 def choose_folder(title: str) -> Optional[Path]:
-    """引数が省略された場合にフォルダ選択ダイアログを開く。"""
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -114,24 +102,29 @@ def choose_folder(title: str) -> Optional[Path]:
     root.attributes("-topmost", True)
     folder = filedialog.askdirectory(title=title)
     root.destroy()
-
     return Path(folder) if folder else None
 
 
-def read_csv_flexible(path: Path) -> pd.DataFrame:
-    """UTF-8 / CP932 などを順に試してCSVを読む。"""
-    last_error: Optional[Exception] = None
+def parse_time_label(label: Optional[str]) -> Optional[time]:
+    if label is None or str(label).strip() == "":
+        return None
+    parts = [int(x) for x in str(label).strip().split(":")]
+    if len(parts) == 2:
+        return time(parts[0], parts[1], 0)
+    if len(parts) == 3:
+        return time(parts[0], parts[1], parts[2])
+    raise ValueError(f"時刻形式が不正です: {label}")
 
+
+def read_csv_flexible(path: Path) -> pd.DataFrame:
+    last_error: Optional[Exception] = None
     for enc in CSV_ENCODINGS:
         try:
             return pd.read_csv(path, encoding=enc)
         except UnicodeDecodeError as exc:
             last_error = exc
-
-    # 文字コード以外のエラーはここで再発生させる
     if last_error is not None:
         raise last_error
-
     return pd.read_csv(path)
 
 
@@ -140,7 +133,6 @@ def canonical_header(text: str) -> str:
 
 
 def find_column(df: pd.DataFrame, candidates: list[str]) -> str:
-    """候補名に近い列名を探す。見つからなければ例外。"""
     columns = list(df.columns)
     canonical = [canonical_header(c) for c in columns]
 
@@ -160,10 +152,8 @@ def find_column(df: pd.DataFrame, candidates: list[str]) -> str:
 
 
 def parse_datetime(series: pd.Series) -> pd.Series:
-    """Timestamp列をdatetimeへ変換する。"""
     dt = pd.to_datetime(series, errors="coerce")
 
-    # pandasがうまく読めなかった場合の追加処理
     if dt.notna().sum() == 0:
         text = series.astype(str).str.strip()
         dt = pd.to_datetime(
@@ -182,7 +172,6 @@ def normalize_date(year: str, month: str, day: str) -> str:
 
 
 def find_date_in_text(text: str) -> Optional[str]:
-    """ファイル名やフォルダ名から YYYY-MM-DD を抽出する。"""
     patterns = [
         r"(20\d{2})[\/_\-年](\d{1,2})[\/_\-月](\d{1,2})",
         r"(20\d{2})(\d{2})(\d{2})",
@@ -197,26 +186,18 @@ def find_date_in_text(text: str) -> Optional[str]:
 
 
 def find_sensor_id(filename: str) -> str:
-    """
-    ファイル名からセンサIDを抽出する。
-    例:
-      2026_01_08_1035_1150_001_加速度.csv -> 001
-      2026_01_08_1035_1150_V001_心拍数.csv -> V001
-    """
     stem = Path(filename).stem
 
     stripped = re.sub(
-        r"加速度|心拍数|心拍|Heart Rate|HeartRate|Heart|HR|ACC|Acceleration",
+        r"加速度|心拍数|心拍|Heart Rate|HeartRate|Heart|HR|ACC|Acceleration|merged",
         "",
         stem,
         flags=re.IGNORECASE,
     )
 
-    tokens = re.split(r"[_\-\s]+", stripped)
-    tokens = [t for t in tokens if t]
-
-    # 日付や時刻らしいトークンを除外し、最後に残ったIDらしいものを採用
+    tokens = [t for t in re.split(r"[_\-\s]+", stripped) if t]
     candidates: list[str] = []
+
     for tok in tokens:
         if re.fullmatch(r"20\d{2}", tok):
             continue
@@ -230,8 +211,7 @@ def find_sensor_id(filename: str) -> str:
     if candidates:
         return candidates[-1]
 
-    # fallback: ファイル名末尾の数値
-    m = re.search(r"([A-Za-z]*\d{1,6})(?=[_\-\s]*(?:加速度|心拍|hr|acc|\.csv|$))", stem, flags=re.IGNORECASE)
+    m = re.search(r"([A-Za-z]*\d{1,6})(?=[_\-\s]*(?:加速度|心拍|hr|acc|merged|\.csv|$))", stem, flags=re.IGNORECASE)
     if m:
         return m.group(1)
 
@@ -240,6 +220,11 @@ def find_sensor_id(filename: str) -> str:
 
 def classify_file(path: Path) -> Optional[str]:
     text = str(path).lower()
+    name = path.name.lower()
+
+    # 統合CSVやレポートは生データではないので無視
+    if "merged" in name or name in {"preprocess_report.csv", "index.json"}:
+        return None
 
     if any(k.lower() in text for k in ACC_KEYWORDS):
         return "acc"
@@ -270,54 +255,28 @@ def parse_file_meta(path: Path, input_dir: Path) -> Optional[FileMeta]:
 def safe_min_max_timestamp(df: pd.DataFrame) -> tuple[str, str]:
     if df.empty:
         return "", ""
-
-    first = df["Timestamp"].iloc[0]
-    last = df["Timestamp"].iloc[-1]
-
-    return str(first), str(last)
-
-def time_string_to_seconds(value: str) -> int:
-    parts = [int(x) for x in str(value).split(":")]
-    if len(parts) == 2:
-        h, m = parts
-        s = 0
-    elif len(parts) == 3:
-        h, m, s = parts
-    else:
-        raise ValueError(f"時刻形式が不正です: {value}")
-    return h * 3600 + m * 60 + s
+    return str(df["Timestamp"].iloc[0]), str(df["Timestamp"].iloc[-1])
 
 
-def filter_by_time_window(df: pd.DataFrame, start_time: str, end_time: str) -> pd.DataFrame:
-    """Timestamp列を使い、指定した1日内時刻範囲だけを残す。"""
-    if df.empty:
+def crop_by_time(df: pd.DataFrame, start_label: Optional[str], end_label: Optional[str]) -> pd.DataFrame:
+    if not ENABLE_TIME_CROP or df.empty:
         return df
-    start_sec = time_string_to_seconds(start_time)
-    end_sec = time_string_to_seconds(end_time)
-    if end_sec <= start_sec:
-        raise ValueError("CROP_END_TIME は CROP_START_TIME より後にしてください。")
+
+    start_t = parse_time_label(start_label)
+    end_t = parse_time_label(end_label)
+
     ts = pd.to_datetime(df["Timestamp"], errors="coerce")
-    sec = ts.dt.hour * 3600 + ts.dt.minute * 60 + ts.dt.second
-    return df[(sec >= start_sec) & (sec <= end_sec)].copy()
+    mask = pd.Series(True, index=df.index)
 
+    if start_t is not None:
+        mask &= ts.dt.time >= start_t
+    if end_t is not None:
+        mask &= ts.dt.time <= end_t
 
+    return df.loc[mask].copy()
 
-# =========================
-# 前処理
-# =========================
 
 def preprocess_acceleration(path: Path) -> tuple[pd.DataFrame, int]:
-    """
-    加速度CSVを読む。
-    - Timestamp
-    - ACC X
-    - ACC Y
-    - ACC Z
-
-    出力:
-    - Timestamp: 1秒にfloorした時刻
-    - AccNorm: 1秒区間平均の加速度ノルム
-    """
     df = read_csv_flexible(path)
     raw_rows = len(df)
 
@@ -333,7 +292,6 @@ def preprocess_acceleration(path: Path) -> tuple[pd.DataFrame, int]:
     out["ACC_Z"] = pd.to_numeric(df[z_col], errors="coerce")
 
     out = out.dropna(subset=["Timestamp", "ACC_X", "ACC_Y", "ACC_Z"]).copy()
-
     out["Timestamp"] = out["Timestamp"].dt.floor("s")
     out["AccNorm"] = np.sqrt(
         out["ACC_X"] * out["ACC_X"]
@@ -352,15 +310,6 @@ def preprocess_acceleration(path: Path) -> tuple[pd.DataFrame, int]:
 
 
 def preprocess_heart_rate(path: Path) -> tuple[pd.DataFrame, int]:
-    """
-    心拍CSVを読む。
-    - Timestamp
-    - Heart Rate
-
-    出力:
-    - Timestamp: 1秒にfloorした時刻
-    - HeartRate: 1秒区間平均の心拍数
-    """
     df = read_csv_flexible(path)
     raw_rows = len(df)
 
@@ -371,7 +320,7 @@ def preprocess_heart_rate(path: Path) -> tuple[pd.DataFrame, int]:
     out["Timestamp"] = parse_datetime(df[ts_col])
     out["HeartRate"] = pd.to_numeric(df[hr_col], errors="coerce")
 
-    # 0 bpmは未検出・欠損相当として除外
+    # 0 bpm は未検出・欠損相当として除外
     out = out.dropna(subset=["Timestamp", "HeartRate"]).copy()
     out = out[out["HeartRate"] > 0].copy()
 
@@ -387,10 +336,9 @@ def preprocess_heart_rate(path: Path) -> tuple[pd.DataFrame, int]:
     return hr_1s, raw_rows
 
 
-def merge_measurement(pair: Pair, output_dir: Path, index_prefix: str) -> ProcessResult:
+def merge_measurement(pair: Pair, output_dir: Path) -> ProcessResult:
     if pair.acc_path is None:
         raise ValueError(f"加速度CSVがありません: date={pair.date}, sensor={pair.sensor_id}")
-
     if pair.hr_path is None:
         raise ValueError(f"心拍CSVがありません: date={pair.date}, sensor={pair.sensor_id}")
 
@@ -403,11 +351,12 @@ def merge_measurement(pair: Pair, output_dir: Path, index_prefix: str) -> Proces
     merged.insert(0, "SensorID", pair.sensor_id)
     merged.insert(0, "Date", pair.date)
 
-    # 表示・読み込みを安定させるため、秒単位文字列にする
-    # 10:40-11:50など、コード上で指定した時刻範囲だけを切り出す
-    merged = filter_by_time_window(merged, CROP_START_TIME, CROP_END_TIME)
+    merged["Timestamp"] = pd.to_datetime(merged["Timestamp"], errors="coerce")
+    merged = crop_by_time(merged, CROP_START_TIME, CROP_END_TIME)
 
+    # 表示・読み込みを安定させるため、秒単位文字列にする
     merged["Timestamp"] = pd.to_datetime(merged["Timestamp"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
+    merged = merged.dropna(subset=["Timestamp"]).copy()
 
     merged = merged[["Date", "Timestamp", "SensorID", "HeartRate", "AccNorm"]]
 
@@ -418,7 +367,6 @@ def merge_measurement(pair: Pair, output_dir: Path, index_prefix: str) -> Proces
     out_name = f"{date_folder}_{pair.sensor_id}_merged.csv"
     out_path = out_folder / out_name
 
-    # GitHub Pagesで読みやすいUTF-8 BOMなし
     merged.to_csv(out_path, index=False, encoding="utf-8")
 
     first_ts, last_ts = safe_min_max_timestamp(merged)
@@ -437,33 +385,6 @@ def merge_measurement(pair: Pair, output_dir: Path, index_prefix: str) -> Proces
     )
 
 
-# =========================
-# index.json
-# =========================
-
-def build_index_json(output_dir: Path, results: list[ProcessResult], index_prefix: str) -> Path:
-    files: list[str] = []
-
-    for result in sorted(results, key=lambda r: (r.date, r.sensor_id)):
-        rel = result.output_path.relative_to(output_dir).as_posix()
-        if index_prefix:
-            files.append(f"{index_prefix.rstrip('/')}/{rel}")
-        else:
-            files.append(rel)
-
-    index = {
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "format": "merged_1s",
-        "description": f"Date, Timestamp, SensorID, HeartRate, AccNorm / cropped {CROP_START_TIME}-{CROP_END_TIME}",
-        "files": files,
-    }
-
-    out_path = output_dir / "index.json"
-    out_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    return out_path
-
-
 def write_report(output_dir: Path, results: list[ProcessResult], warnings: list[str]) -> None:
     report_path = output_dir / "preprocess_report.csv"
     report_df = pd.DataFrame([r.__dict__ for r in results])
@@ -477,10 +398,6 @@ def write_report(output_dir: Path, results: list[ProcessResult], warnings: list[
         warning_path.write_text("\n".join(warnings), encoding="utf-8")
 
 
-# =========================
-# メイン処理
-# =========================
-
 def collect_pairs(input_dir: Path) -> tuple[list[Pair], list[str]]:
     warnings: list[str] = []
     pair_map: dict[tuple[str, str], Pair] = {}
@@ -492,7 +409,6 @@ def collect_pairs(input_dir: Path) -> tuple[list[Pair], list[str]]:
         if meta is None:
             continue
 
-        # 日付がファイル名・フォルダ名から取れない場合はCSV中のTimestampから後で推定する
         date = meta.date
         if date is None:
             try:
@@ -533,7 +449,6 @@ def collect_pairs(input_dir: Path) -> tuple[list[Pair], list[str]]:
         if pair.hr_path is None:
             warnings.append(f"心拍CSVなし: date={pair.date}, sensor={pair.sensor_id}")
 
-    # 統合できるものだけ返す
     usable_pairs = [p for p in pairs if p.acc_path is not None and p.hr_path is not None]
 
     return usable_pairs, warnings
@@ -543,33 +458,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Polarの加速度CSVと心拍CSVを、1秒区間平均の統合CSVへ前処理します。"
     )
-
-    parser.add_argument(
-        "--input-dir",
-        type=str,
-        default=None,
-        help="入力データフォルダ。省略時はフォルダ選択ダイアログを表示します。",
-    )
-
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default=None,
-        help="出力データフォルダ。GitHub Pages用ならリポジトリ内の data フォルダを指定します。",
-    )
-
-    parser.add_argument(
-        "--index-prefix",
-        type=str,
-        default=DEFAULT_INDEX_PREFIX,
-        help="index.json内に書くパス接頭辞。GitHub Pagesのdataフォルダなら通常は data のまま。",
-    )
-
+    parser.add_argument("--input-dir", type=str, default=None, help="入力データフォルダ")
+    parser.add_argument("--output-dir", type=str, default=None, help="出力データフォルダ。通常はリポジトリ内の data フォルダ")
+    parser.add_argument("--no-crop", action="store_true", help="CROP_START_TIME/CROP_END_TIMEによる切り出しを無効化")
     return parser.parse_args()
 
 
 def main() -> int:
+    global ENABLE_TIME_CROP
+
     args = parse_args()
+    if args.no_crop:
+        ENABLE_TIME_CROP = False
 
     input_dir = Path(args.input_dir).expanduser().resolve() if args.input_dir else choose_folder("入力データフォルダを選択")
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else choose_folder("出力データフォルダを選択")
@@ -577,7 +477,6 @@ def main() -> int:
     if input_dir is None or not input_dir.exists():
         print("入力データフォルダが指定されていません。", file=sys.stderr)
         return 1
-
     if output_dir is None:
         print("出力データフォルダが指定されていません。", file=sys.stderr)
         return 1
@@ -586,6 +485,10 @@ def main() -> int:
 
     print(f"[INFO] input_dir : {input_dir}")
     print(f"[INFO] output_dir: {output_dir}")
+    if ENABLE_TIME_CROP:
+        print(f"[INFO] crop time : {CROP_START_TIME} - {CROP_END_TIME}")
+    else:
+        print("[INFO] crop time : disabled")
 
     pairs, warnings = collect_pairs(input_dir)
 
@@ -601,25 +504,25 @@ def main() -> int:
 
     for i, pair in enumerate(pairs, start=1):
         print(f"[INFO] ({i}/{len(pairs)}) date={pair.date}, sensor={pair.sensor_id}")
-
         try:
-            result = merge_measurement(pair, output_dir, args.index_prefix)
+            result = merge_measurement(pair, output_dir)
             results.append(result)
             print(f"       -> {result.output_path}")
             print(f"          acc: {result.raw_acc_rows:,} rows -> {result.acc_1s_rows:,} sec")
             print(f"          hr : {result.raw_hr_rows:,} rows -> {result.hr_1s_rows:,} sec")
-            print(f"          merged: {result.merged_rows:,} rows")
+            print(f"          merged after crop: {result.merged_rows:,} rows")
+            if result.merged_rows == 0:
+                warnings.append(f"切り出し後のデータが0行です: date={pair.date}, sensor={pair.sensor_id}")
 
         except Exception as exc:
             msg = f"処理失敗: date={pair.date}, sensor={pair.sensor_id}, error={exc}"
             warnings.append(msg)
             print(f"[WARN] {msg}", file=sys.stderr)
 
-    index_path = build_index_json(output_dir, results, args.index_prefix)
     write_report(output_dir, results, warnings)
 
-    print(f"[INFO] index.json を作成しました: {index_path}")
     print(f"[INFO] 統合CSV作成数: {len(results)}")
+    print("[INFO] index.json は作成していません。次に scripts/build_data_index.py を実行してください。")
     if warnings:
         print(f"[INFO] 警告数: {len(warnings)}。preprocess_warnings.txt を確認してください。")
 
