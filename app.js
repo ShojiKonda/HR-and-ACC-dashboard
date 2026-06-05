@@ -485,8 +485,11 @@ function stackedBandHighPct(bands, thresholdKeySet) {
   return bands.filter(b => thresholdKeySet.has(b.key)).reduce((sum, b) => sum + b.pct, 0);
 }
 function roundRect(ctx, x, y, w, h, r) {
-  const rr = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+    return;
+  }
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
   ctx.moveTo(x + rr, y);
   ctx.arcTo(x + w, y, x + w, y + h, rr);
   ctx.arcTo(x + w, y + h, x, y + h, rr);
@@ -501,6 +504,8 @@ function drawStackedBandCompare(canvas, config) {
     return;
   }
   const { ctx, width, height } = canvasContext(canvas);
+  // Hidden tabs can report a 0-1 px canvas width. Skip drawing now; the chart is redrawn when the tab becomes visible.
+  if (width < 320 || height < 160) return;
   title(ctx, config.title, "");
   const defs = config.defs || [];
 
