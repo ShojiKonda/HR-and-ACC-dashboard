@@ -18,11 +18,8 @@ const C = {
 const SERIES = [C.blue, C.cyan, C.green, C.purple, C.orange, C.yellow, C.pink, C.red];
 const FONT = '"Noto Sans JP","Hiragino Sans","Yu Gothic","Yu Gothic UI",Meiryo,sans-serif';
 const ACC_SMOOTH_SEC = 5;
-// 解析・表示対象時刻。1日内に複数時間帯のデータが含まれていても、この範囲だけを使用します。
-const ANALYSIS_START_LABEL = "10:40";
-const ANALYSIS_END_LABEL = "11:50";
-const ANALYSIS_START_SEC = 10 * 3600 + 40 * 60;
-const ANALYSIS_END_SEC = 11 * 3600 + 50 * 60;
+const DEFAULT_START_SEC = 10 * 3600 + 40 * 60;
+const DEFAULT_END_SEC = 11 * 3600 + 50 * 60;
 
 const state = {
   measurements: [],
@@ -301,19 +298,24 @@ function boundsForAllData() {
   return { min: minX, max: maxX };
 }
 function ensureTimeRange() {
-  // 10:40-11:50をコード上の解析対象範囲として固定します。
-  // UIの時刻選択もこの範囲内だけに制限されます。
-  const start = ANALYSIS_START_SEC;
-  const end = ANALYSIS_END_SEC;
-  if (state.timeStart === null || state.timeStart < start || state.timeStart >= end) state.timeStart = start;
-  if (state.timeEnd === null || state.timeEnd > end || state.timeEnd <= state.timeStart) state.timeEnd = end;
+  const b = boundsForAllData();
+  if (!b) return;
+  const start = Math.floor(b.min / 300) * 300;
+  const end = Math.ceil(b.max / 300) * 300;
+  const defaultStart = Math.max(start, Math.min(DEFAULT_START_SEC, Math.max(start, end - 300)));
+  const defaultEnd = Math.min(end, Math.max(DEFAULT_END_SEC, defaultStart + 300));
+  if (state.timeStart === null || state.timeStart < start || state.timeStart >= end) state.timeStart = defaultStart;
+  if (state.timeEnd === null || state.timeEnd > end || state.timeEnd <= state.timeStart) state.timeEnd = Math.max(state.timeStart + 300, defaultEnd);
   if (state.timeEnd > end) state.timeEnd = end;
-  if (state.timeStart < start) state.timeStart = start;
-  if (state.timeEnd <= state.timeStart) state.timeEnd = Math.min(end, state.timeStart + 300);
+  if (state.timeEnd <= state.timeStart) state.timeStart = Math.max(start, state.timeEnd - 300);
 }
 function timeOptions() {
+  const b = boundsForAllData();
+  if (!b) return [];
+  const start = Math.floor(b.min / 300) * 300;
+  const end = Math.ceil(b.max / 300) * 300;
   const out = [];
-  for (let s = ANALYSIS_START_SEC; s <= ANALYSIS_END_SEC; s += 300) out.push(s);
+  for (let s = start; s <= end; s += 300) out.push(s);
   return out;
 }
 function inTimeRange(p) { return p.x >= state.timeStart && p.x <= state.timeEnd; }
@@ -416,6 +418,16 @@ const HR_ZONE_DEFS = [
   { key: "z4", level: "4", name: "80-90%", min: 0.80, max: 0.90, bpmMin: 160, bpmMax: 180, color: "#facc15", bandColor: "rgba(250,204,21,.28)" },
   { key: "z5", level: "5", name: "90-100%", min: 0.90, max: Infinity, bpmMin: 180, bpmMax: 200, color: "#ec4899", bandColor: "rgba(236,72,153,.28)" }
 ];
+const ACC_INTENSITY_BANDS = [
+  { key: "b1", label: "1.00-1.05g", min: 1.00, max: 1.05, color: "rgba(96,165,250,.90)" },
+  { key: "b2", label: "1.05-1.10g", min: 1.05, max: 1.10, color: "rgba(34,211,238,.92)" },
+  { key: "b3", label: "1.10-1.20g", min: 1.10, max: 1.20, color: "rgba(45,212,191,.92)" },
+  { key: "b4", label: "1.20-1.40g", min: 1.20, max: 1.40, color: "rgba(167,139,250,.92)" },
+  { key: "b5", label: "1.40-1.60g", min: 1.40, max: 1.60, color: "rgba(250,204,21,.95)" },
+  { key: "b6", label: "1.60-2.00g", min: 1.60, max: 2.00, color: "rgba(251,146,60,.95)" },
+  { key: "b7", label: "≥2.00g", min: 2.00, max: Infinity, color: "rgba(248,113,113,.96)" }
+];
+
 function formatDuration(totalSeconds) {
   const sec = Math.max(0, Math.round(totalSeconds || 0));
   const h = String(Math.floor(sec / 3600)).padStart(2, "0");
@@ -457,6 +469,144 @@ function renderHeartZoneBar(hrValues, hrMaxRef) {
       <div class="zone-caption">${caption}</div>
     </div>`;
 }
+
+function accBandSummary(accValues) {
+  const counts = ACC_INTENSITY_BANDS.map(b => ({ ...b, count: 0, pct: 0 }));
+  const valid = accValues.filter(v => Number.isFinite(v) && v > 0).map(v => Math.max(1, v));
+  if (!valid.length) return counts;
+  for (const value of valid) {
+    const band = counts.find(item => value >= item.min && value < item.max) || counts[counts.length - 1];
+    band.count += 1;
+  }
+  for (const band of counts) band.pct = valid.length ? (band.count / valid.length) * 100 : 0;
+  return counts;
+}
+function stackedBandHighPct(bands, thresholdKeySet) {
+  return bands.filter(b => thresholdKeySet.has(b.key)).reduce((sum, b) => sum + b.pct, 0);
+}
+function roundRect(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+function drawStackedBandCompare(canvas, config) {
+  const rows = config.rows || [];
+  if (!rows.length) {
+    noData(canvas, config.title, config.emptyMessage || "表示できるデータがありません。");
+    return;
+  }
+  const { ctx, width, height } = canvasContext(canvas);
+  title(ctx, config.title, "");
+  const defs = config.defs || [];
+
+  const legendY = 56;
+  let lx = 24;
+  ctx.save();
+  ctx.font = fnt(800, 11);
+  ctx.textAlign = "left";
+  for (const d of defs) {
+    const label = d.label || (d.level ? `Z${d.level}` : d.key);
+    const tw = ctx.measureText(label).width;
+    const itemW = tw + 24;
+    if (lx + itemW > width - 24) break;
+    ctx.fillStyle = d.color;
+    ctx.fillRect(lx, legendY - 5, 12, 12);
+    ctx.fillStyle = INK;
+    ctx.fillText(label, lx + 18, legendY + 1);
+    lx += itemW + 10;
+  }
+  ctx.restore();
+
+  const leftW = 112;
+  const rightW = 112;
+  const plot = { l: 24 + leftW, r: width - 24 - rightW, t: 88, b: height - 42 };
+  const rowGap = 18;
+  const rowH = Math.min(38, Math.max(28, (plot.b - plot.t - rowGap * (rows.length - 1)) / Math.max(1, rows.length)));
+  const totalH = rows.length * rowH + (rows.length - 1) * rowGap;
+  const y0 = plot.t + Math.max(0, (plot.b - plot.t - totalH) / 2);
+  const sx = pct => plot.l + (pct / 100) * (plot.r - plot.l);
+
+  ctx.save();
+  ctx.strokeStyle = AXIS;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(plot.l, plot.b);
+  ctx.lineTo(plot.r, plot.b);
+  ctx.stroke();
+  ctx.font = fnt(800, 11);
+  ctx.fillStyle = INK;
+  ctx.textAlign = "center";
+  for (let i = 0; i <= 4; i++) {
+    const pct = i * 25;
+    const x = sx(pct);
+    ctx.strokeStyle = i === 0 ? AXIS : GRID;
+    ctx.beginPath();
+    ctx.moveTo(x, plot.t - 8);
+    ctx.lineTo(x, plot.b);
+    ctx.stroke();
+    ctx.fillText(`${pct}%`, x, plot.b + 18);
+  }
+  ctx.restore();
+
+  rows.forEach((row, idx) => {
+    const y = y0 + idx * (rowH + rowGap);
+    const cy = y + rowH / 2;
+    ctx.save();
+    ctx.textAlign = "right";
+    ctx.fillStyle = WHITE;
+    ctx.font = fnt(900, 12);
+    ctx.fillText(row.label, plot.l - 12, cy);
+    ctx.restore();
+
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,.04)";
+    roundRect(ctx, plot.l, y, plot.r - plot.l, rowH, 8);
+    ctx.fill();
+    ctx.restore();
+
+    let startPct = 0;
+    for (const seg of row.segments) {
+      const w = ((plot.r - plot.l) * seg.pct) / 100;
+      if (w <= 0.4) { startPct += seg.pct; continue; }
+      ctx.save();
+      ctx.fillStyle = seg.color;
+      ctx.fillRect(sx(startPct), y, w, rowH);
+      if (seg.pct >= 9) {
+        ctx.fillStyle = "#0f172a";
+        ctx.font = fnt(900, 11);
+        ctx.textAlign = "center";
+        ctx.fillText(`${seg.pct.toFixed(0)}%`, sx(startPct) + w / 2, cy);
+      }
+      ctx.restore();
+      startPct += seg.pct;
+    }
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,.14)";
+    roundRect(ctx, plot.l, y, plot.r - plot.l, rowH, 8);
+    ctx.stroke();
+    ctx.restore();
+
+    if (row.summary) {
+      ctx.save();
+      ctx.textAlign = "left";
+      ctx.fillStyle = WHITE;
+      ctx.font = fnt(900, 11);
+      ctx.fillText(row.summary, plot.r + 12, cy - 7);
+      if (row.detail) {
+        ctx.fillStyle = MUTED;
+        ctx.font = fnt(700, 10);
+        ctx.fillText(row.detail, plot.r + 12, cy + 8);
+      }
+      ctx.restore();
+    }
+  });
+}
+
 
 async function autoLoadIndexedData() {
   setStatus("読み込み中", "data/index.json からCSV一覧を取得しています。");
@@ -526,7 +676,7 @@ async function autoLoadIndexedData() {
     state.timeEnd = null;
     ensureTimeRange();
     const modeText = mergedLoaded ? `統合CSV ${mergedLoaded}ファイル` : `元CSV ${rawLoaded}ファイル`;
-    setStatus(`GitHubデータ ${measurements.length}件`, `${modeText}を読み込みました。解析対象時刻は ${ANALYSIS_START_LABEL}-${ANALYSIS_END_LABEL} です。${errors.length ? ` ${errors.length}件の警告があります。` : ""}`);
+    setStatus(`GitHubデータ ${measurements.length}件`, `${modeText}を読み込みました。表示範囲を変えると指標を再計算します。${errors.length ? ` ${errors.length}件の警告があります。` : ""}`);
     updateAll();
   } catch (e) {
     state.measurements = [];
@@ -824,11 +974,7 @@ function combinedChart(canvas, config) {
     drawHeartZoneBands(ctx, hrPlot, hrMax);
   }
   if (hasAcc) {
-    drawAccAxis(ctx, accPlot, accMin, accMax, "Acceleration norm g");
-    ctx.save();
-    ctx.fillStyle = "rgba(34,211,238,.05)";
-    ctx.fillRect(accPlot.l, accPlot.t, accPlot.r - accPlot.l, accPlot.b - accPlot.t);
-    ctx.restore();
+    drawAxis(ctx, accPlot, "left", accMin, accMax, "Acceleration norm g");
   }
   drawTimeAxis(ctx, hasAcc ? accPlot : hrPlot);
 
@@ -1028,8 +1174,8 @@ function scatter(canvas, config) {
   }
   ctx.fillStyle = MUTED; ctx.font = fnt(800, 12); ctx.fillText("平均加速度ノルム", (plot.l + plot.r) / 2, height - 14);
   ctx.save(); ctx.translate(18, (plot.t + plot.b) / 2); ctx.rotate(-Math.PI / 2); ctx.fillText("平均心拍数 bpm", 0, 0); ctx.restore();
-  ctx.save(); ctx.globalAlpha = 0.55;
-  for (const p of pts) { ctx.fillStyle = dateColor(p.date); ctx.beginPath(); ctx.arc(sx(p.avgAcc), sy(p.avgHr), 4.8, 0, Math.PI * 2); ctx.fill(); }
+  ctx.save(); ctx.globalAlpha = 0.22;
+  for (const p of pts) { ctx.fillStyle = dateColor(p.date); ctx.beginPath(); ctx.arc(sx(p.avgAcc), sy(p.avgHr), 3.8, 0, Math.PI * 2); ctx.fill(); }
   ctx.restore();
   const legendDates = dates();
   let lx = Math.max(plot.l + 8, plot.r - 178), ly = plot.t + 12;
@@ -1038,13 +1184,16 @@ function scatter(canvas, config) {
     const d = legendDates[i]; ctx.fillStyle = dateColor(d); ctx.beginPath(); ctx.arc(lx, ly + i * 17, 4, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = INK; ctx.fillText(d, lx + 10, ly + i * 17);
   }
   const vectors = config.vectors || [];
-  for (let i = 0; i < vectors.length - 1; i++) arrow(ctx, sx(vectors[i].avgAcc), sy(vectors[i].avgHr), sx(vectors[i + 1].avgAcc), sy(vectors[i + 1].avgHr), vectors[i + 1].color || dateColor(vectors[i + 1].date));
-  for (const v of vectors) {
+  vectors.forEach((v, i) => {
     const color = v.color || dateColor(v.date);
-    ctx.fillStyle = "rgba(255,255,255,.95)"; ctx.beginPath(); ctx.arc(sx(v.avgAcc), sy(v.avgHr), 10, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(sx(v.avgAcc), sy(v.avgHr), 7, 0, Math.PI * 2); ctx.fill();
-    labelBox(ctx, v.date, sx(v.avgAcc) + 10, sy(v.avgHr) - 13, color);
-  }
+    const x = sx(v.avgAcc);
+    const y = sy(v.avgHr);
+    ctx.fillStyle = "rgba(255,255,255,.95)"; ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, 7.5, 0, Math.PI * 2); ctx.fill();
+    const dx = (i % 2 === 0) ? 12 : -82;
+    const dy = -18 + (i % 3) * 16;
+    labelBox(ctx, v.date, x + dx, y + dy, color);
+  });
   if (config.selected) {
     const s = config.selected;
     ctx.fillStyle = "rgba(255,255,255,.95)"; ctx.beginPath(); ctx.arc(sx(s.avgAcc), sy(s.avgHr), 11, 0, Math.PI * 2); ctx.fill();
@@ -1108,16 +1257,41 @@ function renderCompareCharts() {
   });
   $("compareLegend").innerHTML = legendHtml || '<span class="empty">比較する計測日を選択してください。</span>';
 
-  densityChart($("compareAccDensityChart"), {
-    title: "加速度ノルム分布の日間比較",
+  drawStackedBandCompare($("compareAccBandChart"), {
+    title: "加速度ノルム強度帯別割合の日間比較",
     subtitle: "",
-    series: ms.map(m => ({
-      label: m.date,
-      color: dateColor(m.date),
-      values: filterRange(m.acc).map(p => p.value)
-    }))
+    defs: ACC_INTENSITY_BANDS,
+    rows: ms.map(m => {
+      const values = finiteMetricValues(m, "acc");
+      const bands = accBandSummary(values);
+      const highPct = stackedBandHighPct(bands, new Set(["b4", "b5", "b6", "b7"]));
+      return {
+        label: m.date,
+        segments: bands,
+        summary: `≥1.20g ${highPct.toFixed(1)}%`,
+        detail: `n=${values.length.toLocaleString()}`
+      };
+    }),
+    emptyMessage: "比較用の加速度データがありません。"
   });
-  $("compareAccDensityLegend").innerHTML = legendHtml || '<span class="empty">比較する計測日を選択してください。</span>';
+
+  drawStackedBandCompare($("compareHrZoneChart"), {
+    title: "心拍ゾーン別割合の日間比較",
+    subtitle: "",
+    defs: HR_ZONE_DEFS,
+    rows: ms.map(m => {
+      const values = finiteMetricValues(m, "hr");
+      const bands = heartZoneSummary(values, 200);
+      const highPct = stackedBandHighPct(bands, new Set(["z4", "z5"]));
+      return {
+        label: m.date,
+        segments: bands,
+        summary: `Z4+Z5 ${highPct.toFixed(1)}%`,
+        detail: `n=${values.length.toLocaleString()}`
+      };
+    }),
+    emptyMessage: "比較用の心拍データがありません。"
+  });
 
   const selectedDates = [...state.compareDates].sort();
   combinedChart($("compareClassCombinedChart"), {
@@ -1142,6 +1316,7 @@ function renderCompareCharts() {
     vectors
   });
 }
+
 
 function updateAll() {
   renderSelectors();
