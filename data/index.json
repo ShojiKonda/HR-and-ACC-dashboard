@@ -1,5 +1,9 @@
 {
+<<<<<<< HEAD
   "generatedAt": "2026-06-05T02:59:30.068787+00:00",
+=======
+  "generatedAt": "2026-06-05T02:49:59.165Z",
+>>>>>>> 907d0d5c4e6df1a56eb0a98a2031f6784bff4628
   "format": "merged_1s",
   "description": "Date, Timestamp, SensorID, HeartRate, AccNorm",
   "includePattern": "*_merged.csv",
