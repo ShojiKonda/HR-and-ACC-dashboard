@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-19T00:58:17.857Z",
+  "generatedAt": "2026-06-25T00:23:38.073Z",
   "format": "merged_1s",
   "description": "Date, Timestamp, SensorID, HeartRate, AccNorm",
   "includePattern": "*_merged.csv",
@@ -243,9 +243,6 @@
     "data/2026_06_18/2026_06_18/2026_06_18_V034_merged.csv",
     "data/2026_06_18/2026_06_18/2026_06_18_V035_merged.csv",
     "data/2026_06_18/2026_06_18/2026_06_18_V036_merged.csv",
-    "data/2026_06_18/2026_06_18/2026_06_18_V037_merged.csv",
-    "data/2026_06_18/2026_06_18/2026_06_18_V038_merged.csv",
-    "data/2026_06_18/2026_06_18/2026_06_18_V039_merged.csv",
-    "data/2026_06_18/2026_06_18/2026_06_18_V040_merged.csv"
+    "data/2026_06_18/2026_06_18/2026_06_18_V037_merged.csv"
   ]
 }
