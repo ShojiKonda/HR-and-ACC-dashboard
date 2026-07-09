@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-09T00:59:13.159607+00:00",
+  "generatedAt": "2026-07-09T01:00:01.207Z",
   "format": "merged_1s",
   "description": "Date, Timestamp, SensorID, HeartRate, AccNorm",
   "includePattern": "*_merged.csv",
